@@ -1,34 +1,48 @@
 use anyhow::{bail, Context};
 use clap::Args;
-// use serde_bencode
+// use serde_bencode;
 
 #[derive(Args)]
 pub struct Decode {
     encoded: String,
 }
 
+fn decode(encoded: &str) -> crate::Result<(serde_json::Value, &str)> {
+    match encoded.chars().next() {
+        Some('0'..='9') => {
+            let (len, rest) = encoded
+                .split_once(':')
+                .context("string delimiter not found")?;
+            let len = len.parse::<usize>()?;
+            return Ok((rest[..len].into(), &rest[len..]));
+        }
+        Some('i') => {
+            let (n, rest) = &encoded[1..]
+                .split_once('e')
+                .context("number delimiter not found")?;
+            let n = n.parse::<i64>()?;
+            return Ok((n.into(), rest));
+        }
+        Some('l') => {
+            let mut values = Vec::new();
+            let mut rest = &encoded[1..];
+            while !rest.is_empty() && !rest.starts_with('e') {
+                let (v, remainder) = decode(rest)?;
+                values.push(v);
+                rest = remainder;
+            }
+            return Ok((values.into(), &rest[1..]));
+        }
+        _ => {}
+    }
+
+    bail!("unhandled encoded value: {}", encoded)
+}
+
 impl Decode {
     pub fn execute(&self) -> crate::Result<()> {
-        let c = self.encoded.chars().next().context("no next char")?;
-
-        let value: serde_json::Value = if c.is_digit(10) {
-            let colon_index = self.encoded.find(':').unwrap();
-            let number_string = &self.encoded[..colon_index];
-            let number = number_string.parse::<i64>().unwrap();
-            self.encoded[colon_index + 1..colon_index + 1 + number as usize].into()
-        } else if c == 'i' {
-            let i = self
-                .encoded
-                .find("e")
-                .context("number delimiter not found")?;
-
-            let n = self.encoded[1..i].parse::<i64>()?;
-            n.into()
-        } else {
-            bail!("unhandled encoded value: {}", self.encoded)
-        };
-
-        println!("{value}");
+        let decoded = decode(&self.encoded)?.0;
+        println!("{decoded}");
 
         Ok(())
     }
