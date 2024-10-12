@@ -1,5 +1,6 @@
 use anyhow::{bail, Context};
 use clap::Args;
+use serde_json::Value;
 // use serde_bencode;
 
 #[derive(Args)]
@@ -32,6 +33,19 @@ fn decode(encoded: &str) -> crate::Result<(serde_json::Value, &str)> {
                 rest = remainder;
             }
             return Ok((values.into(), &rest[1..]));
+        }
+        Some('d') => {
+            let mut values = serde_json::Map::new();
+            let mut rest = &encoded[1..];
+            while !rest.is_empty() && !rest.starts_with('e') {
+                let (Value::String(k), remainder) = decode(rest)? else {
+                    bail!("invalid dict key, expected string")
+                };
+                let (v, remainder) = decode(remainder)?;
+                values.insert(k, v);
+                rest = remainder;
+            }
+            return Ok((serde_json::Value::Object(values), &rest[1..]));
         }
         _ => {}
     }
