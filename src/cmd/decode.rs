@@ -1,24 +1,10 @@
 use anyhow::{bail, Context};
 use clap::Args;
-use serde::Deserialize;
 use serde_json::Value;
 
 #[derive(Args)]
 pub struct Decode {
     encoded: String,
-}
-
-#[derive(Deserialize)]
-struct Torrent {
-    announce: String,
-}
-
-#[derive(Deserialize)]
-struct Info {
-    length: usize,
-    name: String,
-    piece_length: usize,
-    pieces: String,
 }
 
 fn decode(encoded: &str) -> crate::Result<(serde_json::Value, &str)> {
