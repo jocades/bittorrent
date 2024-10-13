@@ -3,9 +3,13 @@ use clap::Subcommand;
 mod decode;
 use decode::Decode;
 
+mod info;
+use info::Info;
+
 #[derive(Subcommand)]
 pub enum Command {
     Decode(Decode),
+    Info(Info),
 }
 
 impl Command {
@@ -13,6 +17,7 @@ impl Command {
         use Command::*;
         match self {
             Decode(cmd) => cmd.execute(),
+            Info(cmd) => cmd.execute(),
         }
     }
 }
