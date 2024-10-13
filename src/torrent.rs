@@ -1,4 +1,4 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_bytes::ByteBuf;
 
 /// A Metainfo file (also known as .torrent files).
@@ -11,7 +11,7 @@ pub struct Torrent {
 }
 
 #[allow(dead_code)]
-#[derive(Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct Info {
     /// The suggested name to save the file (or directory) as. It is purely advisory.
     ///
@@ -56,7 +56,7 @@ pub struct Info {
 }
 
 #[allow(dead_code)]
-#[derive(Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct File {
     /// The length of the file, in bytes.
     length: usize,
