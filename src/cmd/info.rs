@@ -27,8 +27,6 @@ impl Info {
             println!("{}", hex::encode(hash));
         }
 
-        // dbg!(torrent);
-
         Ok(())
     }
 }
