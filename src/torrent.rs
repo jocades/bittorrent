@@ -17,7 +17,7 @@ pub struct Info {
     ///
     /// In the single file case, the name key is the name of a file, in the muliple file case, it's
     /// the name of a directory.
-    name: String,
+    pub name: String,
 
     /// The number of bytes in each piece the file is split into.
     ///
@@ -26,11 +26,11 @@ pub struct Info {
     /// always a power of two, most commonly 2^18 = 256K (BitTorrent prior to version 3.2 uses 2
     /// 20 = 1 M as default).
     #[serde(rename = "piece length")]
-    piece_length: usize,
+    pub piece_length: usize,
 
     /// A string whose length is a multiple of 20. It is to be subdivided into strings of length 20,
     /// each of which is the SHA1 hash of the `piece` at the corresponding index.
-    pieces: ByteBuf,
+    pub pieces: ByteBuf,
 
     /// There is also a key `length` or a key `files`, but not both or neither.
 
@@ -48,20 +48,20 @@ pub struct Info {
 
     /// Some additional metadata that can be added to the torrent.
     #[serde(rename = "creation date")]
-    creation_date: Option<usize>,
+    pub creation_date: Option<usize>,
     #[serde(rename = "comment")]
-    comment: Option<String>,
+    pub comment: Option<String>,
     #[serde(rename = "created by")]
-    created_by: Option<String>,
+    pub created_by: Option<String>,
 }
 
 #[allow(dead_code)]
 #[derive(Serialize, Deserialize, Debug)]
 pub struct File {
     /// The length of the file, in bytes.
-    length: usize,
+    pub length: usize,
 
     /// Subdirectory names for this file, the last of which
     /// is the actual file name (a zero length list is an error case).
-    path: Vec<String>,
+    pub path: Vec<String>,
 }

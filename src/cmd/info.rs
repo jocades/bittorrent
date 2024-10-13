@@ -1,5 +1,6 @@
 use std::{fs, path::PathBuf};
 
+use anyhow::bail;
 use clap::Args;
 use sha1::{Digest, Sha1};
 
@@ -18,11 +19,25 @@ impl Info {
         let info_dict = serde_bencode::to_bytes(&torrent.info)?;
         let mut hasher = Sha1::new();
         hasher.update(&info_dict);
-        let hash = hasher.finalize();
+        let info_hash = hasher.finalize();
+
+        if torrent.info.pieces.len() % 20 != 0 {
+            bail!("pieces must be divisible by 20")
+        }
+
+        let piece_hashes = torrent
+            .info
+            .pieces
+            .chunks(20)
+            .map(|chunk| hex::encode(chunk))
+            .collect::<Vec<String>>()
+            .join("\n");
 
         println!("Tracker URL: {}", torrent.announce);
         println!("Length: {}", torrent.info.length);
-        println!("Info Hash: {}", hex::encode(hash));
+        println!("Info Hash: {}", hex::encode(info_hash));
+        println!("Piece Length: {}", torrent.info.piece_length);
+        println!("Piece Hashes:\n{}", piece_hashes);
 
         Ok(())
     }
