@@ -1,3 +1,4 @@
+use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use serde_bytes::ByteBuf;
 
@@ -30,9 +31,9 @@ pub struct Info {
 
     /// A string whose length is a multiple of 20. It is to be subdivided into strings of length 20,
     /// each of which is the SHA1 hash of the `piece` at the corresponding index.
-    pub pieces: ByteBuf,
+    pieces: Pieces,
 
-    /// There is also a key `length` or a key `files`, but not both or neither.
+    /// There is a key `length` or a key `files`, but not both or neither.
 
     /// If length is present then the download represents a single file, otherwise
     /// it represents a set of files which go in a directory structure.
@@ -53,6 +54,78 @@ pub struct Info {
     pub comment: Option<String>,
     #[serde(rename = "created by")]
     pub created_by: Option<String>,
+}
+
+#[derive(Debug)]
+pub struct Pieces(Vec<[u8; 20]>);
+
+impl Torrent {
+    pub fn pieces(&self) -> &[[u8; 20]] {
+        self.info.pieces.0.as_slice()
+    }
+
+    pub fn from_bytes<B: AsRef<[u8]>>(bytes: B) -> crate::Result<Torrent> {
+        serde_bencode::from_bytes(bytes.as_ref()).context("failed to parse torrent")
+    }
+}
+
+mod de {
+    use super::Pieces;
+    use serde::{
+        de::{Error, Visitor},
+        Deserialize, Deserializer,
+    };
+
+    struct PiecesVisitor;
+
+    impl<'de> Visitor<'de> for PiecesVisitor {
+        type Value = Pieces;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter.write_str("a byte string whose length must be divisible by 20")
+        }
+
+        fn visit_bytes<E>(self, v: &[u8]) -> Result<Self::Value, E>
+        where
+            E: Error,
+        {
+            if v.len() % 20 != 0 {
+                return Err(E::custom(format!("length: {}", v.len())));
+            }
+
+            let pieces = Pieces(
+                v.chunks(20)
+                    .map(|chunk| chunk.try_into().expect("guaranteed to be length 20"))
+                    .collect(),
+            );
+
+            Ok(pieces)
+        }
+    }
+
+    impl<'de> Deserialize<'de> for Pieces {
+        fn deserialize<D>(deserializer: D) -> Result<Pieces, D::Error>
+        where
+            D: Deserializer<'de>,
+        {
+            deserializer.deserialize_bytes(PiecesVisitor)
+        }
+    }
+}
+
+mod ser {
+    use super::Pieces;
+    use serde::{Serialize, Serializer};
+
+    impl Serialize for Pieces {
+        fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: Serializer,
+        {
+            let v = self.0.concat();
+            serializer.serialize_bytes(&v)
+        }
+    }
 }
 
 #[allow(dead_code)]

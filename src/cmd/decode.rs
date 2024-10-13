@@ -7,7 +7,7 @@ pub struct Decode {
     encoded: String,
 }
 
-fn decode(encoded: &str) -> crate::Result<(serde_json::Value, &str)> {
+fn decode(encoded: &str) -> crate::Result<(Value, &str)> {
     match encoded.chars().next() {
         Some('0'..='9') => {
             let (len, rest) = encoded
