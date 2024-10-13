@@ -25,19 +25,14 @@ impl Info {
             bail!("pieces must be divisible by 20")
         }
 
-        let piece_hashes = torrent
-            .info
-            .pieces
-            .chunks(20)
-            .map(|chunk| hex::encode(chunk))
-            .collect::<Vec<String>>()
-            .join("\n");
-
         println!("Tracker URL: {}", torrent.announce);
         println!("Length: {}", torrent.info.length);
         println!("Info Hash: {}", hex::encode(info_hash));
         println!("Piece Length: {}", torrent.info.piece_length);
-        println!("Piece Hashes:\n{}", piece_hashes);
+        println!("Piece Hashes:");
+        for chunk in torrent.info.pieces.chunks(20) {
+            println!("{}", hex::encode(chunk));
+        }
 
         Ok(())
     }
