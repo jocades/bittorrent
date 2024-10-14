@@ -4,6 +4,8 @@ use cmd::Command;
 mod torrent;
 use torrent::Torrent;
 
+mod packet;
+
 use anyhow::Result;
 use clap::Parser;
 

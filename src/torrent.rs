@@ -96,7 +96,7 @@ impl Torrent {
             "{}?info_hash={}&{}",
             self.announce,
             self.info.urlencode()?,
-            serde_urlencoded::to_string(&query).context("parse tracker request query")?
+            serde_urlencoded::to_string(&query).context("parse tracker query")?
         ))
     }
 }

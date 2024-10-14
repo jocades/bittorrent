@@ -1,12 +1,16 @@
 use std::{net::SocketAddrV4, path::PathBuf};
+
+use anyhow::Context;
+use clap::Args;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt, BufStream},
     net::TcpStream,
 };
 
-use clap::Args;
-
-use crate::torrent::Torrent;
+use crate::{
+    packet::{HandshakePacket, PEER_ID},
+    Torrent,
+};
 
 #[derive(Args)]
 pub struct Handshake {
@@ -20,18 +24,14 @@ impl Handshake {
         let stream = TcpStream::connect(&self.addr).await?;
         let mut stream = BufStream::new(stream);
 
-        stream.write_u8(19).await?;
-        stream.write_all(b"BitTorrent protocol").await?;
-        stream.write_u64(0).await?;
-        stream.write_all(&torrent.info.hash()?).await?;
-        stream.write_all(b"jordi123456789abcdef").await?;
+        let packet = HandshakePacket::new(torrent.info.hash()?, *PEER_ID);
+        stream.write_all(packet.as_bytes()).await?;
         stream.flush().await?;
 
-        let len = 1 + 19 + 8 + 20 + 20;
-        let mut buf = vec![0u8; len];
+        let mut buf = [0u8; HandshakePacket::size()];
         stream.read_exact(&mut buf).await?;
-        let peer_id = &buf[48..];
-        println!("Peer ID: {}", hex::encode(peer_id));
+        let res = HandshakePacket::from_bytes(&buf).context("parse handshake packet")?;
+        println!("Peer ID: {}", hex::encode(res.peer_id()));
 
         Ok(())
     }
