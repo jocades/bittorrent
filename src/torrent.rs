@@ -62,6 +62,21 @@ pub struct Info {
 
 type Pieces = Box<[[u8; 20]]>;
 
+impl Info {
+    pub fn hash(&self) -> crate::Result<[u8; 20]> {
+        let encoded = serde_bencode::to_bytes(&self).context("encode torrent info")?;
+        Ok(Sha1::digest(&encoded).into())
+    }
+
+    pub fn urlencode(&self) -> crate::Result<String> {
+        Ok(self
+            .hash()?
+            .iter()
+            .map(|byte| format!("%{byte:02x}"))
+            .collect())
+    }
+}
+
 impl Torrent {
     pub fn pieces(&self) -> &[[u8; 20]] {
         &self.info.pieces
@@ -76,9 +91,13 @@ impl Torrent {
         Self::from_bytes(&bytes)
     }
 
-    pub fn info_hash(&self) -> crate::Result<[u8; 20]> {
-        let encoded = serde_bencode::to_bytes(&self.info).context("encode torrent info")?;
-        Ok(Sha1::digest(&encoded).into())
+    pub fn url(&self, query: &TrackerQuery) -> crate::Result<String> {
+        Ok(format!(
+            "{}?info_hash={}&{}",
+            self.announce,
+            self.info.urlencode()?,
+            serde_urlencoded::to_string(&query).context("parse tracker request query")?
+        ))
     }
 }
 
@@ -130,7 +149,7 @@ mod pieces {
 
 /// Note: the info hash field is _not_ included.
 #[derive(Debug, Serialize)]
-pub struct TrackerRequest {
+pub struct TrackerQuery {
     /// A unique identifier for your client.
     ///
     /// A string of length 20 that you get to pick.

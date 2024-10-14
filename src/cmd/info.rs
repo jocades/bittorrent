@@ -13,7 +13,7 @@ impl Info {
     pub fn execute(&self) -> crate::Result<()> {
         let bytes = fs::read(&self.path)?;
         let torrent = Torrent::from_bytes(&bytes)?;
-        let info_hash = torrent.info_hash()?;
+        let info_hash = torrent.info.hash()?;
 
         println!("Tracker URL: {}", torrent.announce);
         println!("Length: {}", torrent.info.len);

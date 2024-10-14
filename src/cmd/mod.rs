@@ -9,11 +9,15 @@ use info::Info;
 mod peers;
 use peers::Peers;
 
+mod handshake;
+use handshake::Handshake;
+
 #[derive(Subcommand)]
 pub enum Command {
     Decode(Decode),
     Info(Info),
     Peers(Peers),
+    Handshake(Handshake),
 }
 
 impl Command {
@@ -23,6 +27,7 @@ impl Command {
             Decode(cmd) => cmd.execute(),
             Info(cmd) => cmd.execute(),
             Peers(cmd) => cmd.execute().await,
+            Handshake(cmd) => cmd.execute().await,
         }
     }
 }
