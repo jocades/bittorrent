@@ -7,10 +7,8 @@ use tokio::{
     net::TcpStream,
 };
 
-use crate::{
-    packet::{HandshakePacket, PEER_ID},
-    Torrent,
-};
+use crate::peer::HandshakePacket;
+use crate::{Torrent, PEER_ID};
 
 #[derive(Args)]
 pub struct Handshake {

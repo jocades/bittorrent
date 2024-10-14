@@ -4,7 +4,8 @@ use cmd::Command;
 mod torrent;
 use torrent::Torrent;
 
-mod packet;
+mod peer;
+use peer::PEER_ID;
 
 use anyhow::Result;
 use clap::Parser;

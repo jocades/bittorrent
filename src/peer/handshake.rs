@@ -14,10 +14,6 @@ pub struct HandshakePacket {
 }
 
 impl HandshakePacket {
-    pub const fn size() -> usize {
-        std::mem::size_of::<Self>()
-    }
-
     pub fn new(info_hash: [u8; 20], peer_id: [u8; 20]) -> Self {
         Self {
             pstrlen: 19,
@@ -26,6 +22,10 @@ impl HandshakePacket {
             info_hash,
             peer_id,
         }
+    }
+
+    pub const fn size() -> usize {
+        std::mem::size_of::<Self>()
     }
 
     pub fn as_bytes(&self) -> &[u8] {
@@ -37,7 +37,6 @@ impl HandshakePacket {
         unsafe { std::slice::from_raw_parts((self as *const Self) as *const u8, Self::size()) }
     }
 
-    #[allow(dead_code)]
     pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
         if bytes.len() != Self::size() {
             return None;
@@ -61,7 +60,6 @@ impl HandshakePacket {
         &self.info_hash
     }
 
-    #[allow(dead_code)]
     pub fn peer_id(&self) -> &[u8; 20] {
         &self.peer_id
     }
