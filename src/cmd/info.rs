@@ -1,7 +1,6 @@
 use std::{fs, path::PathBuf};
 
 use clap::Args;
-use sha1::{Digest, Sha1};
 
 use crate::Torrent;
 
@@ -14,14 +13,12 @@ impl Info {
     pub fn execute(&self) -> crate::Result<()> {
         let bytes = fs::read(&self.path)?;
         let torrent = Torrent::from_bytes(&bytes)?;
-
-        let info_dict = serde_bencode::to_bytes(&torrent.info)?;
-        let info_hash = Sha1::digest(&info_dict);
+        let info_hash = torrent.info_hash()?;
 
         println!("Tracker URL: {}", torrent.announce);
-        println!("Length: {}", torrent.info.length);
+        println!("Length: {}", torrent.info.len);
         println!("Info Hash: {}", hex::encode(info_hash));
-        println!("Piece Length: {}", torrent.info.piece_length);
+        println!("Piece Length: {}", torrent.info.plen);
         println!("Piece Hashes:");
         for hash in torrent.pieces() {
             println!("{}", hex::encode(hash));

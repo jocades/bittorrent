@@ -14,7 +14,8 @@ struct Cli {
     command: Command,
 }
 
-fn main() -> Result<()> {
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> Result<()> {
     let cli = Cli::parse();
-    cli.command.execute()
+    cli.command.execute().await
 }
