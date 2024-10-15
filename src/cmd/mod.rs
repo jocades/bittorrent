@@ -16,6 +16,7 @@ mod download_piece;
 use download_piece::DownloadPiece;
 
 #[derive(Subcommand)]
+#[clap(rename_all = "snake_case")]
 pub enum Command {
     Decode(Decode),
     Info(Info),

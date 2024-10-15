@@ -1,3 +1,5 @@
+use super::{as_u8_slice, as_u8_slice_mut};
+
 pub const BITTORRENT_PROTOCOL: &[u8; 19] = b"BitTorrent protocol";
 
 #[repr(C, packed)]
@@ -31,11 +33,11 @@ impl HandshakePacket {
         // padding and making it valid for any bit pattern.
         // - The lifetime of the returned slice is tied to `&self`, ensuring it's valid.
         // - The size is exactly the size of the struct, so we're not over-reading.
-        unsafe { std::slice::from_raw_parts((self as *const Self) as *const u8, Self::len()) }
+        unsafe { as_u8_slice(self) }
     }
 
     pub fn as_bytes_mut(&mut self) -> &mut [u8] {
-        unsafe { std::slice::from_raw_parts_mut((self as *mut Self) as *mut u8, Self::len()) }
+        unsafe { as_u8_slice_mut(self) }
     }
 
     #[allow(dead_code)]
