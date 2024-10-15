@@ -99,7 +99,7 @@ impl RequestPacket {
 
 #[repr(C)]
 #[derive(Debug)]
-pub struct PiecePacket {
+pub struct PiecePacket<T: ?Sized = [u8]> {
     // The zero-based piece index.
     pub index: [u8; 4],
 
@@ -107,43 +107,46 @@ pub struct PiecePacket {
     pub begin: [u8; 4],
 
     /// The data for the piece, usually 2^14 bytes long.
-    block: Box<[u8]>,
+    chunk: T,
 }
 
 #[allow(dead_code)]
 impl PiecePacket {
-    pub fn new(index: u32, begin: u32, block: &[u8]) -> Self {
-        Self {
-            index: u32::to_be_bytes(index),
-            begin: u32::to_be_bytes(begin),
-            block: block.into(),
-        }
-    }
+    const LEAD: usize = std::mem::size_of::<PiecePacket<()>>();
 
-    pub fn block(&self) -> &[u8] {
-        &self.block
-    }
-
-    pub fn as_bytes(&self) -> &[u8] {
-        unsafe { as_u8_slice(self) }
-    }
-
-    pub fn as_bytes_mut(&mut self) -> &mut [u8] {
-        unsafe { as_u8_slice_mut(self) }
-    }
-
-    #[allow(dead_code)]
     pub fn as_ref_from_bytes(bytes: &[u8]) -> Option<&Self> {
-        if bytes.len() != std::mem::size_of::<Self>() {
+        if bytes.len() < Self::LEAD {
             return None;
         }
+        let n = bytes.len();
+        // NOTE:
+        // We need the length part of the fat pointer to Piece to hold the length of _just_ the `block` field.
+        // And the only way we can change the length of the fat pointer to Piece is by changing the
+        // length of the fat pointer to the slice, which we do by slicing it. We can't slice it at
+        // the front (as it would invalidate the ptr part of the fat pointer), so we slice it at
+        // the back!
+
+        /* let piece = &bytes[..n - Self::LEAD] as *const [u8] as *const PiecePacket;
+        // Safety: Piece is a POD with repr(c), _and_ the fat pointer data length is the length of
+        // the trailing DST field (thanks to the PIECE_LEAD offset).
+        Some(unsafe { &*piece }); */
+
+        unsafe {
+            (std::ptr::slice_from_raw_parts(bytes.as_ptr(), Self::LEAD) as *const Self).as_ref()
+        }
+
+        // unsafe { std::ptr::slice_from_raw_parts(&[bytes]) }
         // SAFETY:
         // - We have checked that `bytes.len()` equals `size_of::<Self>()`, ensuring we are not over-reading.
         // - We are copying into a properly aligned and sized instance of `Self`.
-        unsafe {
+        /* unsafe {
             (std::ptr::slice_from_raw_parts(bytes.as_ptr(), std::mem::size_of::<Self>())
                 as *const Self)
                 .as_ref()
-        }
+        } */
+    }
+
+    pub fn chunk(&self) -> &[u8] {
+        &self.chunk
     }
 }
