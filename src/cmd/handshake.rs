@@ -1,9 +1,8 @@
 use std::{net::SocketAddrV4, path::PathBuf};
 
-use anyhow::Context;
 use clap::Args;
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt, BufStream},
+    io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
 };
 
@@ -19,17 +18,13 @@ pub struct Handshake {
 impl Handshake {
     pub async fn execute(&self) -> crate::Result<()> {
         let torrent = Torrent::read(&self.path)?;
-        let stream = TcpStream::connect(&self.addr).await?;
-        let mut stream = BufStream::new(stream);
+        let mut stream = TcpStream::connect(&self.addr).await?;
 
-        let packet = HandshakePacket::new(torrent.info.hash()?, *PEER_ID);
+        let mut packet = HandshakePacket::new(torrent.info.hash()?, *PEER_ID);
         stream.write_all(packet.as_bytes()).await?;
-        stream.flush().await?;
 
-        let mut buf = [0u8; HandshakePacket::size()];
-        stream.read_exact(&mut buf).await?;
-        let res = HandshakePacket::from_bytes(&buf).context("parse handshake packet")?;
-        println!("Peer ID: {}", hex::encode(res.peer_id()));
+        stream.read_exact(packet.as_bytes_mut()).await?;
+        println!("Peer ID: {}", hex::encode(packet.peer_id()));
 
         Ok(())
     }

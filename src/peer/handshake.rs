@@ -1,9 +1,6 @@
 pub const BITTORRENT_PROTOCOL: &[u8; 19] = b"BitTorrent protocol";
 
-pub const PEER_ID: &[u8; 20] = b"jordi123456789abcdef";
-
-/// Guaranteed fixed memory layout with no padding since we are working with `u8` only.
-#[repr(C)]
+#[repr(C, packed)]
 #[derive(Debug)]
 pub struct HandshakePacket {
     pstrlen: u8,
@@ -24,7 +21,7 @@ impl HandshakePacket {
         }
     }
 
-    pub const fn size() -> usize {
+    pub const fn len() -> usize {
         std::mem::size_of::<Self>()
     }
 
@@ -34,11 +31,16 @@ impl HandshakePacket {
         // padding and making it valid for any bit pattern.
         // - The lifetime of the returned slice is tied to `&self`, ensuring it's valid.
         // - The size is exactly the size of the struct, so we're not over-reading.
-        unsafe { std::slice::from_raw_parts((self as *const Self) as *const u8, Self::size()) }
+        unsafe { std::slice::from_raw_parts((self as *const Self) as *const u8, Self::len()) }
     }
 
+    pub fn as_bytes_mut(&mut self) -> &mut [u8] {
+        unsafe { std::slice::from_raw_parts_mut((self as *mut Self) as *mut u8, Self::len()) }
+    }
+
+    #[allow(dead_code)]
     pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
-        if bytes.len() != Self::size() {
+        if bytes.len() != Self::len() {
             return None;
         }
         let mut packet = Self::new([0; 20], [0; 20]);
@@ -49,7 +51,7 @@ impl HandshakePacket {
             std::ptr::copy_nonoverlapping(
                 bytes.as_ptr(),
                 &mut packet as *mut Self as *mut u8,
-                Self::size(),
+                Self::len(),
             );
         }
         Some(packet)
@@ -78,7 +80,7 @@ mod tests {
     #[test]
     fn handshake_packet_as_bytes() {
         let torrent = Torrent::read("./sample.torrent").unwrap();
-        let packet = HandshakePacket::new(torrent.info.hash().unwrap(), *PEER_ID);
+        let packet = HandshakePacket::new(torrent.info.hash().unwrap(), *crate::PEER_ID);
         let bytes = packet.as_bytes();
         assert_eq!(
             bytes,
