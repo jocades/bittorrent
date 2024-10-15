@@ -15,6 +15,9 @@ use handshake::Handshake;
 mod download_piece;
 use download_piece::DownloadPiece;
 
+mod download;
+use download::Download;
+
 #[derive(Subcommand)]
 #[clap(rename_all = "snake_case")]
 pub enum Command {
@@ -23,6 +26,7 @@ pub enum Command {
     Peers(Peers),
     Handshake(Handshake),
     DownloadPiece(DownloadPiece),
+    Download(Download),
 }
 
 impl Command {
@@ -34,6 +38,7 @@ impl Command {
             Peers(cmd) => cmd.execute().await,
             Handshake(cmd) => cmd.execute().await,
             DownloadPiece(cmd) => cmd.execute().await,
+            Download(cmd) => cmd.execute().await,
         }
     }
 }

@@ -1,5 +1,5 @@
 mod connection;
-pub use connection::{Connection, PiecePacket, RequestPacket};
+pub use connection::{Connection, RequestPacket};
 
 mod handshake;
 pub use handshake::HandshakePacket;

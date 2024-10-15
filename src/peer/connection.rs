@@ -79,6 +79,7 @@ pub struct RequestPacket {
     length: [u8; 4],
 }
 
+#[allow(dead_code)]
 impl RequestPacket {
     pub fn new(index: u32, begin: u32, length: u32) -> Self {
         Self {
@@ -132,18 +133,8 @@ impl PiecePacket {
         Some(unsafe { &*piece }); */
 
         unsafe {
-            (std::ptr::slice_from_raw_parts(bytes.as_ptr(), Self::LEAD) as *const Self).as_ref()
+            (std::ptr::slice_from_raw_parts(bytes.as_ptr(), n - Self::LEAD) as *const Self).as_ref()
         }
-
-        // unsafe { std::ptr::slice_from_raw_parts(&[bytes]) }
-        // SAFETY:
-        // - We have checked that `bytes.len()` equals `size_of::<Self>()`, ensuring we are not over-reading.
-        // - We are copying into a properly aligned and sized instance of `Self`.
-        /* unsafe {
-            (std::ptr::slice_from_raw_parts(bytes.as_ptr(), std::mem::size_of::<Self>())
-                as *const Self)
-                .as_ref()
-        } */
     }
 
     pub fn chunk(&self) -> &[u8] {
