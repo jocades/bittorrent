@@ -2,12 +2,13 @@ use anyhow::{bail, Context};
 use bytes::{Buf, Bytes, BytesMut};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufWriter};
 use tokio::net::TcpStream;
+use tracing::trace;
 
 use crate::peer::HandshakePacket;
 use crate::PEER_ID;
 
 #[derive(Debug, PartialEq)]
-enum Frame {
+pub enum Frame {
     Choke,
     Unchoke,
     Interested,
@@ -84,7 +85,7 @@ impl Connection {
 
     pub async fn read_frame(&mut self) -> crate::Result<Option<Frame>> {
         loop {
-            if let Some(frame) = self.decode()? {
+            if let Some(frame) = self.parse_frame()? {
                 return Ok(Some(frame));
             }
 
@@ -96,28 +97,11 @@ impl Connection {
                 }
             }
         }
-
-        // let len = self.stream.read_u32().await.context("read frame len")?;
-        // let kind: Kind = self
-        //     .stream
-        //     .read_u8()
-        //     .await
-        //     .context("read fram kind")?
-        //     .into();
-        // let payload: Option<Box<[u8]>> = if len > 1 {
-        //     self.buffer.resize(len as usize - 1, 0);
-        //     self.stream
-        //         .read_exact(&mut self.buffer)
-        //         .await
-        //         .context(format!("read frame payload: {len} {kind:?}"))?;
-        //     Some(Box::from(self.buffer.as_slice()))
-        // } else {
-        //     None
-        // };
-        // Ok(Frame::new(len, kind, payload))
     }
 
-    fn decode(&mut self) -> crate::Result<Option<Frame>> {
+    #[tracing::instrument(level = "trace", skip(self))]
+    fn parse_frame(&mut self) -> crate::Result<Option<Frame>> {
+        trace!(buf = self.buf.len());
         if self.buf.len() < 4 {
             // Not enough data to read length marker.
             return Ok(None);
@@ -130,11 +114,13 @@ impl Connection {
                 .context("parse frame length marker")?,
         ) as usize;
 
+        trace!(buf = self.buf.len(), ?len, "read length marker");
+
         if len == 0 {
             // `KeepAlive` messsage, skip length marker and continue parsing,
             // we may still have bytes left in the buffer.
             let _ = self.buf.get_u32(); // self.buf.advance(4);
-            return self.decode();
+            return self.parse_frame();
         }
 
         if self.buf.len() < 4 + len {
@@ -147,6 +133,9 @@ impl Connection {
             // We need more bytes to form the next frame.
             return Ok(None);
         }
+
+        // Skip length marker since we parsed it.
+        self.buf.advance(4);
 
         let frame = match self.buf.get_u8() {
             0 => Frame::Choke,
@@ -179,6 +168,8 @@ impl Connection {
             // TODO: Implemenet custom protocl error.
             n => bail!("protocol error; invalid message kind {n}"),
         };
+
+        trace!(buf = self.buf.len(), ?frame, "parse frame");
 
         Ok(Some(frame))
     }

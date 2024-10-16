@@ -1,14 +1,12 @@
 use std::path::PathBuf;
 
-use anyhow::{ensure, Context};
+use anyhow::{bail, ensure, Context};
 use clap::Args;
 use sha1::{Digest, Sha1};
-use tokio::io::AsyncReadExt;
 use tokio::net::TcpStream;
 use tracing::debug;
 
-use crate::peer::RequestPacket;
-use crate::peer::{frame::Kind, Connection, Frame};
+use crate::peer::{Connection, Frame};
 use crate::torrent::{TrackerQuery, TrackerResponse};
 use crate::Torrent;
 
@@ -47,18 +45,19 @@ impl DownloadPiece {
         eprintln!("Peer ID: {}", hex::encode(handshake.peer_id()));
 
         // recv: bitfield message
-        let frame = conn.read_frame().await?;
+        let frame = conn.read_frame().await?.context("read bitfield")?;
         debug!(?frame);
-        assert_eq!(frame.kind(), Kind::Bitfield);
+        assert!(matches!(frame, Frame::Bitfield(_)));
 
         // send: interested
-        let frame = Frame::with(Kind::Interested, None);
-        conn.write_frame(&frame).await?;
+        // let frame = Frame::with(Kind::Interested, None);
+        // conn.send(&frame).await?;
+        conn.write_frame(&Frame::Interested).await?;
 
         // recv: unchoke
-        let frame = conn.read_frame().await?;
+        let frame = conn.read_frame().await?.context("read unchoke")?;
         debug!(?frame);
-        assert_eq!(frame.kind(), Kind::Unchoke);
+        assert!(matches!(frame, Frame::Unchoke));
 
         // send: request
         let piece_size = if self.piece == pieces.len() - 1 {
@@ -87,20 +86,35 @@ impl DownloadPiece {
                 CHUNK_MAX
             };
 
-            let payload =
+            /* let payload =
                 RequestPacket::new(self.piece as u32, (i * CHUNK_MAX) as u32, chunk_size as u32);
             let req = Frame::with(Kind::Request, Some(payload.as_bytes().into()));
-            conn.write_frame(&req).await?;
+            conn.send(&req).await?; */
+            conn.write_frame(&Frame::Request {
+                index: self.piece as u32,
+                begin: (i * CHUNK_MAX) as u32,
+                length: chunk_size as u32,
+            })
+            .await?;
 
             // recv: piece
-            let res = conn.read_frame().await?;
+            let Frame::Piece {
+                index,
+                begin,
+                chunk,
+            } = conn.read_frame().await?.context("read piece")?
+            else {
+                bail!("expected piece frame")
+            };
+
+            /* let res = conn.read_frame().await?;
             let mut payload = res.payload().context("piece frame must have payload")?;
             assert_eq!(res.kind(), Kind::Piece);
 
             let index = payload.read_u32().await?;
             let begin = payload.read_u32().await?;
             let mut chunk = vec![0u8; chunk_size];
-            payload.read_exact(&mut chunk).await.context("read chunk")?;
+            payload.read_exact(&mut chunk).await.context("read chunk")?; */
 
             assert_eq!(index, self.piece as u32);
             assert_eq!(begin as usize, i * CHUNK_MAX);
