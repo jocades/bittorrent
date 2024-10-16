@@ -3,10 +3,8 @@ use std::path::PathBuf;
 use anyhow::{bail, ensure, Context};
 use clap::Args;
 use sha1::{Digest, Sha1};
-use tokio::net::TcpStream;
-use tracing::debug;
 
-use crate::peer::{Connection, Frame};
+use crate::peer::{Frame, Peer};
 use crate::torrent::{TrackerQuery, TrackerResponse};
 use crate::Torrent;
 
@@ -18,7 +16,7 @@ pub struct DownloadPiece {
     piece: usize,
 }
 
-/// Max size piece chunk, 16 * 1024 bytes (16 kiB)
+/// Max `piece chunk` size, 16 * 1024 bytes (16 kiB)
 const CHUNK_MAX: usize = 1 << 14;
 
 impl DownloadPiece {
@@ -37,27 +35,25 @@ impl DownloadPiece {
         let url = torrent.url(&query)?;
         let bytes = reqwest::get(&url).await?.bytes().await?;
         let tracker_info: TrackerResponse = serde_bencode::from_bytes(&bytes)?;
-        let addr = tracker_info.peers.first().context("empty peers list")?;
-        let stream = TcpStream::connect(addr).await?;
-        let mut conn = Connection::new(stream);
 
-        let handshake = conn.handshake(torrent.info.hash()?).await?;
+        let addr = tracker_info.peers.first().context("empty peers list")?;
+        let mut peer = Peer::connect(addr).await?;
+
+        let handshake = peer.handshake(torrent.info.hash()?).await?;
         eprintln!("Peer ID: {}", hex::encode(handshake.peer_id()));
 
         // recv: bitfield message
-        let frame = conn.read_frame().await?.context("read bitfield")?;
-        debug!(?frame);
-        assert!(matches!(frame, Frame::Bitfield(_)));
+        let Some(Frame::Bitfield(_)) = peer.recv().await? else {
+            bail!("expected bitfield frame")
+        };
 
         // send: interested
-        // let frame = Frame::with(Kind::Interested, None);
-        // conn.send(&frame).await?;
-        conn.write_frame(&Frame::Interested).await?;
+        peer.send(&Frame::Interested).await?;
 
         // recv: unchoke
-        let frame = conn.read_frame().await?.context("read unchoke")?;
-        debug!(?frame);
-        assert!(matches!(frame, Frame::Unchoke));
+        let Some(Frame::Unchoke) = peer.recv().await? else {
+            bail!("expected unchoke frame")
+        };
 
         // send: request
         let piece_size = if self.piece == pieces.len() - 1 {
@@ -86,11 +82,7 @@ impl DownloadPiece {
                 CHUNK_MAX
             };
 
-            /* let payload =
-                RequestPacket::new(self.piece as u32, (i * CHUNK_MAX) as u32, chunk_size as u32);
-            let req = Frame::with(Kind::Request, Some(payload.as_bytes().into()));
-            conn.send(&req).await?; */
-            conn.write_frame(&Frame::Request {
+            peer.send(&Frame::Request {
                 index: self.piece as u32,
                 begin: (i * CHUNK_MAX) as u32,
                 length: chunk_size as u32,
@@ -98,23 +90,14 @@ impl DownloadPiece {
             .await?;
 
             // recv: piece
-            let Frame::Piece {
+            let Some(Frame::Piece {
                 index,
                 begin,
                 chunk,
-            } = conn.read_frame().await?.context("read piece")?
+            }) = peer.recv().await?
             else {
                 bail!("expected piece frame")
             };
-
-            /* let res = conn.read_frame().await?;
-            let mut payload = res.payload().context("piece frame must have payload")?;
-            assert_eq!(res.kind(), Kind::Piece);
-
-            let index = payload.read_u32().await?;
-            let begin = payload.read_u32().await?;
-            let mut chunk = vec![0u8; chunk_size];
-            payload.read_exact(&mut chunk).await.context("read chunk")?; */
 
             assert_eq!(index, self.piece as u32);
             assert_eq!(begin as usize, i * CHUNK_MAX);

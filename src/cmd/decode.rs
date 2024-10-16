@@ -44,7 +44,7 @@ fn decode(encoded: &str) -> crate::Result<(Value, &str)> {
                 values.insert(k, v);
                 rest = remainder;
             }
-            return Ok((serde_json::Value::Object(values), &rest[1..]));
+            return Ok((Value::Object(values), &rest[1..]));
         }
         _ => {}
     }

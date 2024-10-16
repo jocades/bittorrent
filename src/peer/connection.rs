@@ -61,7 +61,7 @@ pub enum Frame {
 
 #[derive(Debug)]
 pub struct Connection {
-    pub stream: BufWriter<TcpStream>,
+    stream: BufWriter<TcpStream>,
     buf: BytesMut,
 }
 
@@ -77,9 +77,15 @@ impl Connection {
 
     pub async fn handshake(&mut self, info_hash: [u8; 20]) -> crate::Result<HandshakePacket> {
         let mut packet = HandshakePacket::new(info_hash, *PEER_ID);
-        self.stream.write_all(packet.as_bytes()).await?;
+        self.stream
+            .write_all(packet.as_bytes())
+            .await
+            .context("send handshake packet")?;
         self.stream.flush().await?;
-        self.stream.read_exact(packet.as_bytes_mut()).await?;
+        self.stream
+            .read_exact(packet.as_bytes_mut())
+            .await
+            .context("read handshake packet")?;
         Ok(packet)
     }
 
@@ -121,6 +127,16 @@ impl Connection {
             // we may still have bytes left in the buffer.
             let _ = self.buf.get_u32(); // self.buf.advance(4);
             return self.parse_frame();
+        }
+
+        // Check that the length is not too large to avoid a denial of
+        // service attack where the server runs out of memory.
+        if len > MAX {
+            /* return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("Frame of length {} is too large.", len),
+            )); */
+            bail!("frame of length {len} is too large.")
         }
 
         if self.buf.len() < 4 + len {
@@ -165,7 +181,7 @@ impl Connection {
                 begin: self.buf.get_u32(),
                 length: self.buf.get_u32(),
             },
-            // TODO: Implemenet custom protocl error.
+            // TODO: Implemenet custom protocol error.
             n => bail!("protocol error; invalid message kind {n}"),
         };
 
@@ -175,12 +191,6 @@ impl Connection {
     }
 
     pub async fn write_frame(&mut self, frame: &Frame) -> crate::Result<()> {
-        /* self.stream.write_u32(frame.len()).await?;
-        self.stream.write_u8(frame.kind() as u8).await?;
-        if let Some(bytes) = frame.payload() {
-            self.stream.write_all(&bytes).await?;
-        }
-        self.stream.flush().await?; */
         match frame {
             Frame::Have(index) => {
                 self.stream.write_u32(5).await?;

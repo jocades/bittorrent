@@ -1,6 +1,6 @@
 use super::{as_u8_slice, as_u8_slice_mut};
 
-pub const BITTORRENT_PROTOCOL: &[u8; 19] = b"BitTorrent protocol";
+pub const PROTOCOL: &[u8; 19] = b"BitTorrent protocol";
 
 #[repr(C, packed)]
 #[derive(Debug)]
@@ -16,7 +16,7 @@ impl HandshakePacket {
     pub fn new(info_hash: [u8; 20], peer_id: [u8; 20]) -> Self {
         Self {
             pstrlen: 19,
-            pstr: *BITTORRENT_PROTOCOL,
+            pstr: *PROTOCOL,
             reserved: [0; 8],
             info_hash,
             peer_id,
@@ -70,7 +70,7 @@ impl HandshakePacket {
 
     #[allow(dead_code)]
     pub fn is_valid_protocol(&self) -> bool {
-        self.pstrlen == 19 && self.pstr == *BITTORRENT_PROTOCOL
+        self.pstrlen == 19 && self.pstr == *PROTOCOL
     }
 }
 

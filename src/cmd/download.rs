@@ -46,8 +46,6 @@ impl Download {
         assert!(matches!(frame, Frame::Bitfield(_)));
 
         // send: interested
-        // let frame = Frame::with(Kind::Interested, None);
-        // conn.send(&frame).await?;
         conn.write_frame(&Frame::Interested).await?;
 
         // recv: unchoke
@@ -60,8 +58,6 @@ impl Download {
 
         let piece_hashes = torrent.pieces();
         let mut file: Vec<u8> = Vec::with_capacity(torrent.info.len);
-
-        // let mut hashes = Vec::new();
 
         for (piece_idx, piece_hash) in piece_hashes.iter().enumerate() {
             let pspan = debug_span!("download piece");
@@ -111,7 +107,6 @@ impl Download {
                 info!(n_chunk = i, ?request);
 
                 // recv: piece
-                // recv: piece
                 let Frame::Piece {
                     index,
                     begin,
@@ -123,7 +118,7 @@ impl Download {
 
                 info!(n_chunk = i, ?index, ?begin, chunk = chunk.len());
 
-                assert_eq!(index as usize, i);
+                assert_eq!(index as usize, piece_idx);
                 assert_eq!(begin as usize, i * CHUNK_MAX);
                 assert_eq!(chunk.len(), chunk_size);
 
