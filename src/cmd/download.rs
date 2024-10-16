@@ -62,7 +62,7 @@ impl Download {
         let piece_hashes = torrent.pieces();
         let mut file: Vec<u8> = Vec::with_capacity(torrent.info.len);
 
-        let mut hashes = Vec::new();
+        // let mut hashes = Vec::new();
 
         for (i, piece_hash) in piece_hashes.iter().enumerate() {
             let pspan = debug_span!("download piece");
@@ -130,10 +130,10 @@ impl Download {
             }
 
             assert_eq!(piece.len(), piece_size);
-            // assert_eq!(hex::encode(Sha1::digest(&piece)), hex::encode(piece_hash));
-            let downloaded_piece_hash = hex::encode(Sha1::digest(&piece));
-            info!(?downloaded_piece_hash, piece_hash = hex::encode(piece_hash));
-            hashes.push(downloaded_piece_hash);
+            assert_eq!(hex::encode(Sha1::digest(&piece)), hex::encode(piece_hash));
+            // let downloaded_piece_hash = hex::encode(Sha1::digest(&piece));
+            // info!(?downloaded_piece_hash, piece_hash = hex::encode(piece_hash));
+            // hashes.push(downloaded_piece_hash);
 
             file.extend(&piece);
             piece.clear();

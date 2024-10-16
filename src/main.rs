@@ -17,7 +17,7 @@ struct Cli {
     command: Command,
 }
 
-#[tokio::main(flavor = "current_thread")]
+#[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
 
