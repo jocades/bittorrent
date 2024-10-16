@@ -5,7 +5,9 @@ mod torrent;
 use torrent::Torrent;
 
 mod peer;
-use peer::PEER_ID;
+use peer::{Connection, Frame, Peer, PEER_ID};
+
+mod download;
 
 use anyhow::Result;
 use clap::Parser;

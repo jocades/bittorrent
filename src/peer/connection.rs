@@ -59,6 +59,7 @@ pub enum Frame {
     },
 }
 
+/// A wrapper around the `TcpStream` to send and receive framed messages.
 #[derive(Debug)]
 pub struct Connection {
     stream: BufWriter<TcpStream>,
@@ -108,17 +109,14 @@ impl Connection {
     #[tracing::instrument(level = "trace", skip(self))]
     fn parse_frame(&mut self) -> crate::Result<Option<Frame>> {
         trace!(buf = self.buf.len());
+
         if self.buf.len() < 4 {
             // Not enough data to read length marker.
             return Ok(None);
         }
 
-        // Read length marker.
-        let len = u32::from_be_bytes(
-            self.buf[..4]
-                .try_into()
-                .context("parse frame length marker")?,
-        ) as usize;
+        // Read length marker, this should not fail since we know we have 4 bytes in the buffer.
+        let len = u32::from_be_bytes(self.buf[..4].try_into().unwrap()) as usize;
 
         trace!(buf = self.buf.len(), ?len, "read length marker");
 
@@ -132,11 +130,11 @@ impl Connection {
         // Check that the length is not too large to avoid a denial of
         // service attack where the server runs out of memory.
         if len > MAX {
+            bail!("protocol error; frame of length {len} is too large.")
             /* return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!("Frame of length {} is too large.", len),
             )); */
-            bail!("frame of length {len} is too large.")
         }
 
         if self.buf.len() < 4 + len {
@@ -150,7 +148,7 @@ impl Connection {
             return Ok(None);
         }
 
-        // Skip length marker since we parsed it.
+        // Skip length marker, it has already been parsed.
         self.buf.advance(4);
 
         let frame = match self.buf.get_u8() {
@@ -185,7 +183,11 @@ impl Connection {
             n => bail!("protocol error; invalid message kind {n}"),
         };
 
-        trace!(buf = self.buf.len(), ?frame, "parse frame");
+        trace!(
+            buf = self.buf.len(),
+            frame = u8::from(&frame),
+            "parse frame"
+        );
 
         Ok(Some(frame))
     }
@@ -236,16 +238,13 @@ impl Connection {
                 self.stream.write_u32(*length).await?;
             }
             // `Choke`, `Unchoke`, `Interested`, and 'NotInterested' have no payload.
-            frame => self.write_empty_frame(frame).await?,
+            frame => {
+                self.stream.write_u32(1).await?;
+                self.stream.write_u8(u8::from(frame)).await?;
+            }
         };
 
         self.stream.flush().await?;
-        Ok(())
-    }
-
-    async fn write_empty_frame(&mut self, frame: &Frame) -> crate::Result<()> {
-        self.stream.write_u32(1).await?;
-        self.stream.write_u8(u8::from(frame)).await?;
         Ok(())
     }
 }
@@ -264,86 +263,5 @@ impl From<&Frame> for u8 {
             Piece { .. } => 7,
             Cancel { .. } => 8,
         }
-    }
-}
-
-use super::{as_u8_slice, as_u8_slice_mut};
-
-#[repr(C, packed)]
-#[derive(Debug)]
-pub struct RequestPacket {
-    // The zero-based piece index
-    index: [u8; 4],
-
-    /// The zero-based byte offset within the piece
-    /// This'll be 0 for the first block, 2^14 for the second block, 2*2^14 for the third block etc.
-    /// length: the length of the block in bytes
-    begin: [u8; 4],
-
-    /// This'll be 2^14 (16 * 1024) for all blocks except the last one.
-    /// The last block will contain 2^14 bytes or less, you'll need calculate this value using the piece length.
-    length: [u8; 4],
-}
-
-#[allow(dead_code)]
-impl RequestPacket {
-    pub fn new(index: u32, begin: u32, length: u32) -> Self {
-        Self {
-            index: u32::to_be_bytes(index),
-            begin: u32::to_be_bytes(begin),
-            length: u32::to_be_bytes(length),
-        }
-    }
-
-    pub fn as_bytes(&self) -> &[u8] {
-        unsafe { as_u8_slice(self) }
-    }
-
-    pub fn as_bytes_mut(&mut self) -> &mut [u8] {
-        unsafe { as_u8_slice_mut(self) }
-    }
-}
-
-#[repr(C)]
-#[derive(Debug)]
-pub struct PiecePacket<T: ?Sized = [u8]> {
-    // The zero-based piece index.
-    pub index: [u8; 4],
-
-    /// The zero-based byte offset within the piece.
-    pub begin: [u8; 4],
-
-    /// The data for the piece, usually 2^14 bytes long.
-    chunk: T,
-}
-
-#[allow(dead_code)]
-impl PiecePacket {
-    const LEAD: usize = std::mem::size_of::<PiecePacket<()>>();
-
-    pub fn as_ref_from_bytes(bytes: &[u8]) -> Option<&Self> {
-        if bytes.len() < Self::LEAD {
-            return None;
-        }
-        let n = bytes.len();
-        // NOTE:
-        // We need the length part of the fat pointer to Piece to hold the length of _just_ the `block` field.
-        // And the only way we can change the length of the fat pointer to Piece is by changing the
-        // length of the fat pointer to the slice, which we do by slicing it. We can't slice it at
-        // the front (as it would invalidate the ptr part of the fat pointer), so we slice it at
-        // the back!
-
-        /* let piece = &bytes[..n - Self::LEAD] as *const [u8] as *const PiecePacket;
-        // Safety: Piece is a POD with repr(c), _and_ the fat pointer data length is the length of
-        // the trailing DST field (thanks to the PIECE_LEAD offset).
-        Some(unsafe { &*piece }); */
-
-        unsafe {
-            (std::ptr::slice_from_raw_parts(bytes.as_ptr(), n - Self::LEAD) as *const Self).as_ref()
-        }
-    }
-
-    pub fn chunk(&self) -> &[u8] {
-        &self.chunk
     }
 }

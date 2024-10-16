@@ -1,14 +1,17 @@
+use std::io::SeekFrom;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
-use anyhow::{bail, Context};
+use anyhow::{bail, ensure};
 use clap::Args;
 use sha1::{Digest, Sha1};
-use tokio::net::TcpStream;
-use tracing::{debug, debug_span, info, info_span, trace_span};
+use tokio::fs::File;
+use tokio::io::{AsyncSeekExt, AsyncWriteExt};
+use tokio::sync::mpsc;
+use tracing::{trace, trace_span};
 
-use crate::peer::{Connection, Frame};
 use crate::torrent::{TrackerQuery, TrackerResponse};
-use crate::Torrent;
+use crate::{download, Frame, Peer, Torrent};
 
 #[derive(Args)]
 pub struct Download {
@@ -17,11 +20,11 @@ pub struct Download {
     output: PathBuf,
 }
 
-const CHUNK_MAX: usize = 1 << 14;
-
 impl Download {
     pub async fn execute(&self) -> crate::Result<()> {
         let torrent = Torrent::read(&self.path)?;
+
+        // -- Move this logic somewhere
         let query = TrackerQuery {
             peer_id: "jordi123456789abcdef".into(),
             port: 6881,
@@ -33,112 +36,86 @@ impl Download {
         let url = torrent.url(&query)?;
         let bytes = reqwest::get(&url).await?.bytes().await?;
         let tracker_info: TrackerResponse = serde_bencode::from_bytes(&bytes)?;
-        let addr = tracker_info.peers.first().context("empty peers list")?;
-        let stream = TcpStream::connect(addr).await?;
-        let mut conn = Connection::new(stream);
+        // --
 
-        let handshake = conn.handshake(torrent.info.hash()?).await?;
-        eprintln!("Peer ID: {}", hex::encode(handshake.peer_id()));
+        let info_hash = torrent.info.hash()?;
+        let pieces = torrent.pieces();
+        let npieces = pieces.len();
 
-        // recv: bitfield message
-        let frame = conn.read_frame().await?.context("read bitfield")?;
-        debug!(?frame);
-        assert!(matches!(frame, Frame::Bitfield(_)));
+        let (tx, mut rx) = mpsc::channel(100);
+        let queue = Arc::new(Mutex::new((0..npieces).collect::<Vec<_>>()));
 
-        // send: interested
-        conn.write_frame(&Frame::Interested).await?;
+        let mut tasks = Vec::new();
 
-        // recv: unchoke
-        let frame = conn.read_frame().await?.context("read unchoke")?;
-        debug!(?frame);
-        assert!(matches!(frame, Frame::Unchoke));
-
-        let span = trace_span!("download file");
+        let span = trace_span!("download");
         let _guard = span.enter();
 
-        let piece_hashes = torrent.pieces();
-        let mut file: Vec<u8> = Vec::with_capacity(torrent.info.len);
+        for addr in tracker_info.peers {
+            let tx = tx.clone();
+            let queue = queue.clone();
 
-        for (piece_idx, piece_hash) in piece_hashes.iter().enumerate() {
-            let pspan = debug_span!("download piece");
-            let _pguard = pspan.enter();
+            let task = tokio::spawn(async move {
+                let mut peer = Peer::connect(addr, info_hash).await?;
+                trace!("connected to peer {addr}");
 
-            // send: request
-            let piece_size = if piece_idx == piece_hashes.len() - 1 {
-                let rest = torrent.info.len % torrent.info.plen;
-                if rest == 0 {
-                    torrent.info.plen
-                } else {
-                    rest
-                }
-            } else {
-                torrent.info.plen
-            };
+                let Some(Frame::Bitfield(_)) = peer.recv().await? else {
+                    bail!("expected bitfield frame")
+                };
+                trace!("recv bitfield");
 
-            let nchunks = (piece_size + CHUNK_MAX - 1) / CHUNK_MAX; // round up
-            let mut piece: Vec<u8> = Vec::with_capacity(piece_size);
+                peer.send(&Frame::Interested).await?;
+                trace!("send interested");
 
-            debug!(?piece_idx, ?piece_size, ?nchunks);
+                let Some(Frame::Unchoke) = peer.recv().await? else {
+                    bail!("expected unchoke frame")
+                };
+                trace!("recv unchoke");
 
-            for i in 0..nchunks {
-                let cspan = info_span!("download chunk");
-                let _cguard = cspan.enter();
-
-                let chunk_size = if i == nchunks - 1 {
-                    let rest = piece_size % CHUNK_MAX;
-                    if rest == 0 {
-                        CHUNK_MAX
+                while let Some(piece_index) = {
+                    let mut guard = queue.lock().unwrap();
+                    guard.pop()
+                    // pieces_left.lock().unwrap().pop()
+                } {
+                    let piece_size = if piece_index == npieces - 1 {
+                        let rest = torrent.info.len % torrent.info.plen;
+                        if rest == 0 {
+                            torrent.info.plen
+                        } else {
+                            rest
+                        }
                     } else {
-                        rest
-                    }
-                } else {
-                    CHUNK_MAX
-                };
+                        torrent.info.plen
+                    };
 
-                info!(n_chunk = i, ?chunk_size);
+                    trace!("piece");
+                    let piece = download::piece(&mut peer, piece_index, piece_size).await?;
+                    tx.send((piece_index, piece)).await?;
+                    trace!("sent");
+                }
 
-                let request = Frame::Request {
-                    index: piece_idx as u32,
-                    begin: (i * CHUNK_MAX) as u32,
-                    length: chunk_size as u32,
-                };
-                conn.write_frame(&request).await?;
+                Ok(())
+            });
 
-                info!(n_chunk = i, ?request);
-
-                // recv: piece
-                let Frame::Piece {
-                    index,
-                    begin,
-                    chunk,
-                } = conn.read_frame().await?.context("read piece")?
-                else {
-                    bail!("expected piece frame")
-                };
-
-                info!(n_chunk = i, ?index, ?begin, chunk = chunk.len());
-
-                assert_eq!(index as usize, piece_idx);
-                assert_eq!(begin as usize, i * CHUNK_MAX);
-                assert_eq!(chunk.len(), chunk_size);
-
-                piece.extend(&chunk);
-                debug!(filled = piece.len());
-            }
-
-            assert_eq!(piece.len(), piece_size);
-            assert_eq!(hex::encode(Sha1::digest(&piece)), hex::encode(piece_hash));
-
-            file.extend(&piece);
-            piece.clear();
+            tasks.push(task);
         }
 
-        assert_eq!(file.len(), torrent.info.len);
+        let mut file = File::create(&self.output).await?;
+        let mut completed = 0;
 
-        tokio::fs::write(&self.output, &file)
-            .await
-            .context("write piece")?;
+        while completed < npieces {
+            if let Some((index, piece)) = rx.recv().await {
+                ensure!(hex::encode(Sha1::digest(&piece)) == hex::encode(pieces[index]));
 
+                file.seek(SeekFrom::Start((index * torrent.info.plen) as u64))
+                    .await?;
+                file.write_all(&piece).await?;
+
+                completed += 1;
+                eprintln!("Piece {index} completed. Progress: {completed}/{npieces}",);
+            }
+        }
+
+        eprintln!("Download complete!");
         Ok(())
     }
 }

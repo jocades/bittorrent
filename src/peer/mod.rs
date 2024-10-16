@@ -1,4 +1,6 @@
+use anyhow::{bail, Result};
 use tokio::net::{TcpStream, ToSocketAddrs};
+use tracing::debug;
 
 mod connection;
 pub use connection::{Connection, Frame};
@@ -22,26 +24,34 @@ pub struct Peer {
     conn: Connection,
 }
 
+const CHUNK_MAX: usize = 1 << 14;
+
 impl Peer {
-    pub async fn connect<T: ToSocketAddrs>(addr: T) -> crate::Result<Self> {
-        let socket = TcpStream::connect(addr).await?;
-        let conn = Connection::new(socket);
+    /// Connect to a peer and try to perform a handshake to establish the connection.
+    pub async fn connect<T: ToSocketAddrs>(addr: T, info_hash: [u8; 20]) -> Result<Self> {
+        let stream = TcpStream::connect(addr).await?;
+        let mut conn = Connection::new(stream);
+
+        let handshake = conn.handshake(info_hash).await?;
+        debug!("Peer ID: {}", hex::encode(handshake.peer_id()));
+
         Ok(Peer { conn })
     }
 
-    pub async fn handshake(&mut self, info_hash: [u8; 20]) -> crate::Result<HandshakePacket> {
-        self.conn.handshake(info_hash).await
-    }
-
-    pub async fn send(&mut self, frame: &Frame) -> crate::Result<()> {
+    pub async fn send(&mut self, frame: &Frame) -> Result<()> {
         self.conn.write_frame(frame).await
     }
 
-    pub async fn recv(&mut self) -> crate::Result<Option<Frame>> {
+    pub async fn recv(&mut self) -> Result<Option<Frame>> {
         self.conn.read_frame().await
     }
-}
 
-pub async fn download_piece(piece_hash: [u8; 20]) {
-    todo!()
+    pub async fn request(&mut self, index: usize, begin: usize, length: usize) -> Result<()> {
+        self.send(&Frame::Request {
+            index: index as u32,
+            begin: begin as u32,
+            length: length as u32,
+        })
+        .await
+    }
 }

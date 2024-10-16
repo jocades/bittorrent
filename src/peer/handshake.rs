@@ -29,8 +29,8 @@ impl HandshakePacket {
 
     pub fn as_bytes(&self) -> &[u8] {
         // SAFETY:
-        // - All fields are u8 or fixed-size arrays of u8, ensuring a consistent memory layout with no
-        // padding and making it valid for any bit pattern.
+        // - Struct is `repr(C, packed)` and all fields are u8 or fixed-size arrays of u8,
+        // ensuring a consistent memory layout valid for any bit pattern.
         // - The lifetime of the returned slice is tied to `&self`, ensuring it's valid.
         // - The size is exactly the size of the struct, so we're not over-reading.
         unsafe { as_u8_slice(self) }
