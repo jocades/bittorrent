@@ -4,7 +4,6 @@ use anyhow::{bail, ensure, Context};
 use clap::Args;
 use sha1::{Digest, Sha1};
 
-use crate::torrent::{TrackerQuery, TrackerResponse};
 use crate::{download, Frame, Peer, Torrent};
 
 #[derive(Args)]
@@ -23,19 +22,8 @@ impl DownloadPiece {
 
         ensure!(self.piece < pieces.len());
 
-        let query = TrackerQuery {
-            peer_id: "jordi123456789abcdef".into(),
-            port: 6881,
-            uploaded: 0,
-            downloaded: 0,
-            left: torrent.info.len,
-            compact: 1,
-        };
-        let url = torrent.url(&query)?;
-        let bytes = reqwest::get(&url).await?.bytes().await?;
-        let tracker_info: TrackerResponse = serde_bencode::from_bytes(&bytes)?;
-
-        let addr = tracker_info.peers.first().context("empty peers list")?;
+        let tracker_info = torrent.discover().await?;
+        let addr = tracker_info.peers[0];
         let mut peer = Peer::connect(addr, info_hash).await?;
 
         let Some(Frame::Bitfield(_)) = peer.recv().await? else {

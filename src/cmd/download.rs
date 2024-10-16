@@ -10,7 +10,6 @@ use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 use tokio::sync::mpsc;
 use tracing::{trace, trace_span};
 
-use crate::torrent::{TrackerQuery, TrackerResponse};
 use crate::{download, Frame, Peer, Torrent};
 
 #[derive(Args)]
@@ -23,20 +22,7 @@ pub struct Download {
 impl Download {
     pub async fn execute(&self) -> crate::Result<()> {
         let torrent = Torrent::read(&self.path)?;
-
-        // -- Move this logic somewhere
-        let query = TrackerQuery {
-            peer_id: "jordi123456789abcdef".into(),
-            port: 6881,
-            uploaded: 0,
-            downloaded: 0,
-            left: torrent.info.len,
-            compact: 1,
-        };
-        let url = torrent.url(&query)?;
-        let bytes = reqwest::get(&url).await?.bytes().await?;
-        let tracker_info: TrackerResponse = serde_bencode::from_bytes(&bytes)?;
-        // --
+        let tracker_info = torrent.discover().await?;
 
         let info_hash = torrent.info.hash()?;
         let pieces = torrent.pieces();
@@ -45,11 +31,10 @@ impl Download {
         let (tx, mut rx) = mpsc::channel(100);
         let queue = Arc::new(Mutex::new((0..npieces).collect::<Vec<_>>()));
 
-        let mut tasks = Vec::new();
-
         let span = trace_span!("download");
         let _guard = span.enter();
 
+        let mut tasks = Vec::with_capacity(tracker_info.peers.len());
         for addr in tracker_info.peers {
             let tx = tx.clone();
             let queue = queue.clone();

@@ -2,7 +2,6 @@ use anyhow::{bail, Context};
 use bytes::{Buf, Bytes, BytesMut};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufWriter};
 use tokio::net::TcpStream;
-use tracing::trace;
 
 use crate::peer::HandshakePacket;
 use crate::PEER_ID;
@@ -106,10 +105,7 @@ impl Connection {
         }
     }
 
-    #[tracing::instrument(level = "trace", skip(self))]
     fn parse_frame(&mut self) -> crate::Result<Option<Frame>> {
-        trace!(buf = self.buf.len());
-
         if self.buf.len() < 4 {
             // Not enough data to read length marker.
             return Ok(None);
@@ -117,11 +113,8 @@ impl Connection {
 
         // Read length marker, this should not fail since we know we have 4 bytes in the buffer.
         let len = u32::from_be_bytes(self.buf[..4].try_into().unwrap()) as usize;
-
-        trace!(buf = self.buf.len(), ?len, "read length marker");
-
         if len == 0 {
-            // `KeepAlive` messsage, skip length marker and continue parsing,
+            // `KeepAlive` messsage, skip length marker and continue parsing since
             // we may still have bytes left in the buffer.
             let _ = self.buf.get_u32(); // self.buf.advance(4);
             return self.parse_frame();
@@ -182,12 +175,6 @@ impl Connection {
             // TODO: Implemenet custom protocol error.
             n => bail!("protocol error; invalid message kind {n}"),
         };
-
-        trace!(
-            buf = self.buf.len(),
-            frame = u8::from(&frame),
-            "parse frame"
-        );
 
         Ok(Some(frame))
     }

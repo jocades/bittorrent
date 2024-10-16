@@ -1,4 +1,4 @@
-use anyhow::{bail, Result};
+use anyhow::Result;
 use tokio::net::{TcpStream, ToSocketAddrs};
 use tracing::debug;
 
@@ -24,8 +24,6 @@ pub struct Peer {
     conn: Connection,
 }
 
-const CHUNK_MAX: usize = 1 << 14;
-
 impl Peer {
     /// Connect to a peer and try to perform a handshake to establish the connection.
     pub async fn connect<T: ToSocketAddrs>(addr: T, info_hash: [u8; 20]) -> Result<Self> {
@@ -44,14 +42,5 @@ impl Peer {
 
     pub async fn recv(&mut self) -> Result<Option<Frame>> {
         self.conn.read_frame().await
-    }
-
-    pub async fn request(&mut self, index: usize, begin: usize, length: usize) -> Result<()> {
-        self.send(&Frame::Request {
-            index: index as u32,
-            begin: begin as u32,
-            length: length as u32,
-        })
-        .await
     }
 }

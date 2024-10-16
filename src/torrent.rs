@@ -3,6 +3,9 @@ use std::{net::SocketAddrV4, path::Path};
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
+use tracing::trace;
+
+use crate::peer::PEER_ID;
 
 /// A Metainfo file (also known as .torrent files).
 #[derive(Serialize, Deserialize, Debug)]
@@ -58,14 +61,24 @@ pub struct Info {
     pub comment: Option<String>,
     #[serde(rename = "created by")]
     pub created_by: Option<String>,
+
+    #[serde(skip)]
+    hash: Option<[u8; 20]>,
 }
 
 type Pieces = Box<[[u8; 20]]>;
 
 impl Info {
+    // TODO: apply hash while deserializing
     pub fn hash(&self) -> crate::Result<[u8; 20]> {
-        let encoded = serde_bencode::to_bytes(&self).context("encode torrent info")?;
-        Ok(Sha1::digest(&encoded).into())
+        trace!(hashed = self.hash.is_some());
+        match self.hash {
+            Some(hash) => Ok(hash),
+            None => {
+                let encoded = serde_bencode::to_bytes(&self).context("encode torrent info")?;
+                Ok(Sha1::digest(&encoded).into())
+            }
+        }
     }
 
     pub fn urlencode(&self) -> crate::Result<String> {
@@ -83,7 +96,7 @@ impl Torrent {
     }
 
     pub fn from_bytes<B: AsRef<[u8]>>(bytes: B) -> crate::Result<Torrent> {
-        serde_bencode::from_bytes(bytes.as_ref()).context("parse torrent")
+        serde_bencode::from_bytes(bytes.as_ref()).context("decode torrent")
     }
 
     pub fn read<P: AsRef<Path>>(path: P) -> crate::Result<Torrent> {
@@ -91,13 +104,17 @@ impl Torrent {
         Self::from_bytes(&bytes)
     }
 
-    pub fn url(&self, query: &TrackerQuery) -> crate::Result<String> {
-        Ok(format!(
+    pub async fn discover(&self) -> crate::Result<TrackerInfo> {
+        let query = TrackerQuery::new(String::from_utf8_lossy(PEER_ID), self.info.len);
+        let url = format!(
             "{}?info_hash={}&{}",
             self.announce,
             self.info.urlencode()?,
-            serde_urlencoded::to_string(query).context("parse tracker query")?
-        ))
+            serde_urlencoded::to_string(&query).context("encode tracker query")?
+        );
+
+        let res = reqwest::get(&url).await.context("get tracker info")?;
+        serde_bencode::from_bytes(&res.bytes().await?).context("decode tracker response")
     }
 }
 
@@ -174,8 +191,21 @@ pub struct TrackerQuery {
     pub compact: u8,
 }
 
+impl TrackerQuery {
+    pub fn new(peer_id: impl Into<String>, left: usize) -> Self {
+        TrackerQuery {
+            peer_id: peer_id.into(),
+            port: 6881,
+            uploaded: 0,
+            downloaded: 0,
+            left,
+            compact: 1,
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
-pub struct TrackerResponse {
+pub struct TrackerInfo {
     /// An integer, indicating how often your client should make a request to the tracker in seconds.
     ///
     /// You can ignore this value for the purposes of this challenge.

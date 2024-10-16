@@ -1,4 +1,5 @@
 //! Taken from [https://github.com/toby/serde-bencode/blob/master/examples/parse_torrent.rs]
+#![allow(dead_code)]
 use serde::Deserialize;
 use serde_bencode::de;
 use serde_bytes::ByteBuf;
