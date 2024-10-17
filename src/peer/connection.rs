@@ -65,7 +65,11 @@ pub struct Connection {
     buf: BytesMut,
 }
 
-const MAX: usize = 1 << 16;
+/// 4B
+const U32_SIZE: usize = std::mem::size_of::<u32>();
+
+/// 65536B (64KiB)
+const FRAME_MAX: usize = 1 << 16;
 
 impl Connection {
     pub fn new(stream: TcpStream) -> Connection {
@@ -106,7 +110,7 @@ impl Connection {
     }
 
     fn parse_frame(&mut self) -> crate::Result<Option<Frame>> {
-        if self.buf.len() < 4 {
+        if self.buf.len() < U32_SIZE {
             // Not enough data to read length marker.
             return Ok(None);
         }
@@ -122,7 +126,7 @@ impl Connection {
 
         // Check that the length is not too large to avoid a denial of
         // service attack where the server runs out of memory.
-        if len > MAX {
+        if len > FRAME_MAX {
             bail!("protocol error; frame of length {len} is too large.")
             /* return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
@@ -130,19 +134,19 @@ impl Connection {
             )); */
         }
 
-        if self.buf.len() < 4 + len {
+        if self.buf.len() < U32_SIZE + len {
             // The full data has not yet arrived.
             //
             // We reserve more space in the buffer. This is not strictly
             // necessary, but is a good idea performance-wise.
-            self.buf.reserve(4 + len - self.buf.len());
+            self.buf.reserve(U32_SIZE + len - self.buf.len());
 
             // We need more bytes to form the next frame.
             return Ok(None);
         }
 
         // Skip length marker, it has already been parsed.
-        self.buf.advance(4);
+        self.buf.advance(U32_SIZE);
 
         let frame = match self.buf.get_u8() {
             0 => Frame::Choke,
