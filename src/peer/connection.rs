@@ -1,6 +1,8 @@
 //! An implementation of the [BitTorrent Protocol](https://www.bittorrent.org/beps/bep_0003.html)
 
-use anyhow::{bail, Context};
+use std::ops::Deref;
+
+use anyhow::Context;
 use bytes::{Buf, Bytes, BytesMut};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufWriter};
 use tokio::net::TcpStream;
@@ -244,6 +246,14 @@ impl Connection {
 
         self.stream.flush().await?;
         Ok(())
+    }
+}
+
+impl Deref for Connection {
+    type Target = BufWriter<TcpStream>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.stream
     }
 }
 

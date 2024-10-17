@@ -4,7 +4,7 @@ use anyhow::{bail, ensure, Context};
 use clap::Args;
 use sha1::{Digest, Sha1};
 
-use crate::{download_piece, Frame, Peer, Torrent};
+use crate::{download_piece, tracker, Frame, Peer, Torrent};
 
 #[derive(Args)]
 pub struct DownloadPiece {
@@ -22,9 +22,8 @@ impl DownloadPiece {
 
         ensure!(self.piece < pieces.len());
 
-        let peers = torrent.discover().await?;
-        let addr = peers[0];
-        let mut peer = Peer::connect(addr, info_hash).await?;
+        let peers = tracker::discover(&torrent).await?;
+        let mut peer = Peer::connect(peers[0], info_hash).await?;
 
         let Some(Frame::Bitfield(_)) = peer.recv().await? else {
             bail!("expected bitfield frame")

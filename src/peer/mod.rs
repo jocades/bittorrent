@@ -1,12 +1,12 @@
-use anyhow::Result;
-use tokio::net::{TcpStream, ToSocketAddrs};
-use tracing::debug;
-
 mod connection;
 pub use connection::{Connection, Frame};
 
 mod handshake;
 pub use handshake::HandshakePacket;
+
+use anyhow::Result;
+use tokio::net::{TcpStream, ToSocketAddrs};
+use tracing::debug;
 
 /// Hardcoded peer id for the challenge
 pub const PEER_ID: &[u8; 20] = b"jordi123456789abcdef";

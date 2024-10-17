@@ -19,16 +19,16 @@ use tokio::fs::File;
 use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 use tokio::sync::mpsc;
 
-use crate::{Frame, Peer, Torrent};
+use crate::{tracker, Frame, Peer, Torrent};
 
 /// Max `piece chunk` size, 16 * 1024 bytes (16 kiB)
 const CHUNK_MAX: usize = 1 << 14;
 
 type Queue = Arc<Mutex<Vec<usize>>>;
 
-#[tracing::instrument(level = "trace", skip(output))]
+#[tracing::instrument(level = "trace", skip(torrent, output))]
 pub async fn download(torrent: &Torrent, output: impl AsRef<Path>) -> Result<()> {
-    let peers = torrent.discover().await?;
+    let peers = tracker::discover(&torrent).await?;
     let info_hash = torrent.info.hash()?;
     let total_length = torrent.len();
     let piece_length = torrent.plen();

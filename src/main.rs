@@ -4,6 +4,8 @@ use cmd::Command;
 mod torrent;
 use torrent::Torrent;
 
+mod tracker;
+
 mod peer;
 use peer::{Frame, Peer, PEER_ID};
 

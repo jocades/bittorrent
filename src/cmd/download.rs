@@ -12,7 +12,6 @@ pub struct Download {
 }
 
 impl Download {
-    #[tracing::instrument(level = "trace")]
     pub async fn execute(&self) -> crate::Result<()> {
         let torrent = Torrent::read(&self.path)?;
         download(&torrent, &self.output).await
