@@ -19,7 +19,6 @@ use tokio::fs::File;
 use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 use tokio::sync::mpsc;
 
-use crate::torrent::TrackerInfo;
 use crate::{Frame, Peer, Torrent};
 
 /// Max `piece chunk` size, 16 * 1024 bytes (16 kiB)
@@ -27,11 +26,12 @@ const CHUNK_MAX: usize = 1 << 14;
 
 type Queue = Arc<Mutex<Vec<usize>>>;
 
+#[tracing::instrument(level = "trace", skip(output))]
 pub async fn download(torrent: &Torrent, output: impl AsRef<Path>) -> Result<()> {
-    let TrackerInfo { peers, .. } = torrent.discover().await?;
+    let peers = torrent.discover().await?;
     let info_hash = torrent.info.hash()?;
-    let total_length = torrent.info.len;
-    let piece_length = torrent.info.plen;
+    let total_length = torrent.len();
+    let piece_length = torrent.plen();
     let pieces = torrent.pieces();
     let npieces = pieces.len();
 
@@ -62,9 +62,8 @@ pub async fn download(torrent: &Torrent, output: impl AsRef<Path>) -> Result<()>
             };
 
             while let Some(piece_index) = {
-                let mut guard = queue.lock().unwrap();
+                let mut guard = queue.lock().expect("acquire queue lock");
                 guard.pop()
-                // pieces_left.lock().unwrap().pop()
             } {
                 let piece_size = if piece_index == npieces - 1 {
                     let rest = total_length % piece_length;
@@ -92,7 +91,7 @@ pub async fn download(torrent: &Torrent, output: impl AsRef<Path>) -> Result<()>
         if let Some((index, piece)) = rx.recv().await {
             ensure!(hex::encode(Sha1::digest(&piece)) == hex::encode(pieces[index]));
 
-            file.seek(SeekFrom::Start((index * torrent.info.plen) as u64))
+            file.seek(SeekFrom::Start((index * torrent.plen()) as u64))
                 .await?;
             file.write_all(&piece).await?;
 

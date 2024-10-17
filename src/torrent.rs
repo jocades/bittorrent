@@ -1,6 +1,6 @@
 use std::{net::SocketAddrV4, path::Path};
 
-use anyhow::Context;
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
 use tracing::trace;
@@ -32,7 +32,7 @@ pub struct Info {
     /// always a power of two, most commonly 2^18 = 256K (BitTorrent prior to version 3.2 uses 2
     /// 20 = 1 M as default).
     #[serde(rename = "piece length")]
-    pub plen: usize,
+    piece_length: usize,
 
     /// A string whose length is a multiple of 20. It is to be subdivided into strings of length 20,
     /// each of which is the SHA1 hash of the `piece` at the corresponding index.
@@ -46,7 +46,7 @@ pub struct Info {
     ///
     /// In the single file case, length maps to the length of the file in bytes.
     #[serde(rename = "length")]
-    pub len: usize,
+    length: usize,
 
     /// For the purposes of the other keys, the multi-file case is treated as
     /// only having a single file by concatenating the files in the order they appear in the files list.
@@ -70,7 +70,7 @@ type Pieces = Box<[[u8; 20]]>;
 
 impl Info {
     // TODO: apply hash while deserializing
-    pub fn hash(&self) -> crate::Result<[u8; 20]> {
+    pub fn hash(&self) -> Result<[u8; 20]> {
         trace!(hashed = self.hash.is_some());
         match self.hash {
             Some(hash) => Ok(hash),
@@ -81,7 +81,7 @@ impl Info {
         }
     }
 
-    pub fn urlencode(&self) -> crate::Result<String> {
+    pub fn urlencode(&self) -> Result<String> {
         Ok(self
             .hash()?
             .iter()
@@ -91,21 +91,32 @@ impl Info {
 }
 
 impl Torrent {
+    #[inline]
     pub fn pieces(&self) -> &[[u8; 20]] {
         &self.info.pieces
     }
 
-    pub fn from_bytes<B: AsRef<[u8]>>(bytes: B) -> crate::Result<Torrent> {
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.info.length
+    }
+
+    #[inline]
+    pub fn plen(&self) -> usize {
+        self.info.piece_length
+    }
+
+    pub fn from_bytes<B: AsRef<[u8]>>(bytes: B) -> Result<Torrent> {
         serde_bencode::from_bytes(bytes.as_ref()).context("decode torrent")
     }
 
-    pub fn read<P: AsRef<Path>>(path: P) -> crate::Result<Torrent> {
+    pub fn read<P: AsRef<Path>>(path: P) -> Result<Torrent> {
         let bytes = std::fs::read(path)?;
         Self::from_bytes(&bytes)
     }
 
-    pub async fn discover(&self) -> crate::Result<TrackerInfo> {
-        let query = TrackerQuery::new(String::from_utf8_lossy(PEER_ID), self.info.len);
+    pub async fn discover(&self) -> Result<Vec<SocketAddrV4>> {
+        let query = TrackerQuery::new(String::from_utf8_lossy(PEER_ID), self.info.length);
         let url = format!(
             "{}?info_hash={}&{}",
             self.announce,
@@ -114,7 +125,11 @@ impl Torrent {
         );
 
         let res = reqwest::get(&url).await.context("get tracker info")?;
-        serde_bencode::from_bytes(&res.bytes().await?).context("decode tracker response")
+        let tracker_info = serde_bencode::from_bytes::<TrackerInfo>(&res.bytes().await?)
+            .context("decode tracker response")?;
+
+        // We will only use the `peers` field for this challenge, ignore the `interval` field for now.
+        Ok(tracker_info.peers)
     }
 }
 

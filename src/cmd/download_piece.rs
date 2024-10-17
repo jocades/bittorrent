@@ -22,8 +22,8 @@ impl DownloadPiece {
 
         ensure!(self.piece < pieces.len());
 
-        let tracker_info = torrent.discover().await?;
-        let addr = tracker_info.peers[0];
+        let peers = torrent.discover().await?;
+        let addr = peers[0];
         let mut peer = Peer::connect(addr, info_hash).await?;
 
         let Some(Frame::Bitfield(_)) = peer.recv().await? else {
@@ -37,14 +37,14 @@ impl DownloadPiece {
         };
 
         let piece_size = if self.piece == pieces.len() - 1 {
-            let rest = torrent.info.len % torrent.info.plen;
+            let rest = torrent.len() % torrent.plen();
             if rest == 0 {
-                torrent.info.plen
+                torrent.plen()
             } else {
                 rest
             }
         } else {
-            torrent.info.plen
+            torrent.plen()
         };
 
         let piece = download::piece(&mut peer, self.piece, piece_size).await?;

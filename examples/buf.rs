@@ -2,6 +2,7 @@ use bytes::{Buf, BufMut, Bytes, BytesMut};
 use tokio::io::AsyncReadExt;
 use tracing::debug;
 
+#[allow(unused)]
 #[derive(Debug)]
 enum Frame {
     Other { data: Bytes },
@@ -21,6 +22,7 @@ async fn main() -> anyhow::Result<()> {
     stream.put_u32((bar.len() + 1) as u32);
     stream.put_u8(7);
     stream.extend(bar);
+
     let mut stream = stream.as_ref();
     debug!(?stream);
 

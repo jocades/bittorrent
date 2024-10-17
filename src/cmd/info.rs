@@ -16,9 +16,9 @@ impl Info {
         let info_hash = torrent.info.hash()?;
 
         println!("Tracker URL: {}", torrent.announce);
-        println!("Length: {}", torrent.info.len);
+        println!("Length: {}", torrent.len());
         println!("Info Hash: {}", hex::encode(info_hash));
-        println!("Piece Length: {}", torrent.info.plen);
+        println!("Piece Length: {}", torrent.plen());
         println!("Piece Hashes:");
         for hash in torrent.pieces() {
             println!("{}", hex::encode(hash));
