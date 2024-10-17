@@ -1,3 +1,5 @@
+//! An implementation of the [BitTorrent Protocol](https://www.bittorrent.org/beps/bep_0003.html)
+
 use anyhow::{bail, Context};
 use bytes::{Buf, Bytes, BytesMut};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufWriter};
@@ -58,6 +60,16 @@ pub enum Frame {
     },
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    #[error("protocol error; connection reset by peer")]
+    ConnectionReset,
+    #[error("protocol error; frame of length {0} is too large")]
+    Overflow(usize),
+    #[error("protocol error; unknown message kind: {0}")]
+    UnknownKind(u8),
+}
+
 /// A wrapper around the `TcpStream` to send and receive framed messages.
 #[derive(Debug)]
 pub struct Connection {
@@ -103,7 +115,7 @@ impl Connection {
                 if self.buf.is_empty() {
                     return Ok(None);
                 } else {
-                    bail!("connection reset by peer")
+                    Err(Error::ConnectionReset)?
                 }
             }
         }
@@ -118,20 +130,16 @@ impl Connection {
         // Read length marker, this should not fail since we know we have 4 bytes in the buffer.
         let len = u32::from_be_bytes(self.buf[..4].try_into().unwrap()) as usize;
         if len == 0 {
-            // `KeepAlive` messsage, skip length marker and continue parsing since
-            // we may still have bytes left in the buffer.
-            let _ = self.buf.get_u32(); // self.buf.advance(4);
+            // `KeepAlive` messsage, skip length marker and continue parsing
+            // since we may still have bytes left in the buffer.
+            self.buf.advance(U32_SIZE);
             return self.parse_frame();
         }
 
         // Check that the length is not too large to avoid a denial of
         // service attack where the server runs out of memory.
         if len > FRAME_MAX {
-            bail!("protocol error; frame of length {len} is too large.")
-            /* return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!("Frame of length {} is too large.", len),
-            )); */
+            Err(Error::Overflow(len))?
         }
 
         if self.buf.len() < U32_SIZE + len {
@@ -145,7 +153,7 @@ impl Connection {
             return Ok(None);
         }
 
-        // Skip length marker, it has already been parsed.
+        // Skip length marker.
         self.buf.advance(U32_SIZE);
 
         let frame = match self.buf.get_u8() {
@@ -176,8 +184,7 @@ impl Connection {
                 begin: self.buf.get_u32(),
                 length: self.buf.get_u32(),
             },
-            // TODO: Implemenet custom protocol error.
-            n => bail!("protocol error; invalid message kind {n}"),
+            n => Err(Error::UnknownKind(n))?,
         };
 
         Ok(Some(frame))
@@ -240,6 +247,7 @@ impl Connection {
     }
 }
 
+// It's feels kind of silly doesn't it?
 impl From<&Frame> for u8 {
     fn from(value: &Frame) -> Self {
         use Frame::*;

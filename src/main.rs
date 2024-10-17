@@ -8,7 +8,7 @@ mod peer;
 use peer::{Frame, Peer, PEER_ID};
 
 mod download;
-use download::download;
+use download::{download, download_piece};
 
 use anyhow::Result;
 use clap::Parser;

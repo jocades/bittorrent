@@ -16,7 +16,8 @@ pub struct Torrent {
     pub info: Info,
 }
 
-#[allow(dead_code)]
+type Pieces = Box<[[u8; 20]]>;
+
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Info {
     /// The suggested name to save the file (or directory) as. It is purely advisory.
@@ -45,7 +46,6 @@ pub struct Info {
     /// it represents a set of files which go in a directory structure.
     ///
     /// In the single file case, length maps to the length of the file in bytes.
-    #[serde(rename = "length")]
     length: usize,
 
     /// For the purposes of the other keys, the multi-file case is treated as
@@ -65,8 +65,6 @@ pub struct Info {
     #[serde(skip)]
     hash: Option<[u8; 20]>,
 }
-
-type Pieces = Box<[[u8; 20]]>;
 
 impl Info {
     // TODO: apply hash while deserializing
@@ -184,10 +182,13 @@ mod pieces {
 pub struct TrackerQuery {
     /// A unique identifier for your client.
     ///
-    /// A string of length 20 that you get to pick.
+    /// A string of length 20, each downloader generates its own id at random at
+    /// the start of a new download. This value will also almost certainly have to be escaped.
     pub peer_id: String,
 
-    /// The port your client is listening on.
+    /// The port number this peer is listening on. Common behavior is for a
+    /// downloader to try to listen on port 6881 and if that port is taken
+    /// try 6882, then 6883, etc. and give up after 6889.
     pub port: u16,
 
     /// The total amount uploaded so far.
@@ -197,6 +198,10 @@ pub struct TrackerQuery {
     pub downloaded: usize,
 
     /// The number of bytes left to download.
+    ///
+    /// Note that this can't be computed from downloaded and the file length
+    /// since it might be a resume, and there's a chance that some of the
+    /// downloaded data failed an integrity check and had to be re-downloaded.
     pub left: usize,
 
     /// Whether the peer list should use the compact representation

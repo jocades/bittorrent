@@ -76,7 +76,7 @@ pub async fn download(torrent: &Torrent, output: impl AsRef<Path>) -> Result<()>
                     piece_length
                 };
 
-                let piece = piece(&mut peer, piece_index, piece_size).await?;
+                let piece = download_piece(&mut peer, piece_index, piece_size).await?;
                 tx.send((piece_index, piece)).await?;
             }
             Ok(())
@@ -100,12 +100,18 @@ pub async fn download(torrent: &Torrent, output: impl AsRef<Path>) -> Result<()>
         }
     }
 
+    for task in tasks {
+        if let Err(e) = task.await? {
+            eprintln!("download task failed: {e}");
+        }
+    }
+
     eprintln!("Download complete!");
     Ok(())
 }
 
 #[tracing::instrument(level = "trace", skip(peer))]
-pub async fn piece(peer: &mut Peer, piece_index: usize, size: usize) -> Result<BytesMut> {
+pub async fn download_piece(peer: &mut Peer, piece_index: usize, size: usize) -> Result<BytesMut> {
     let nchunks = (size + CHUNK_MAX - 1) / CHUNK_MAX; // round up for last piece.
     let mut piece = BytesMut::with_capacity(size);
 
