@@ -4,7 +4,7 @@ use anyhow::{bail, ensure, Context};
 use clap::Args;
 use sha1::{Digest, Sha1};
 
-use crate::{download, tracker, Frame, Peer, Torrent};
+use crate::{download, tracker, Frame, Metainfo, Peer};
 
 #[derive(Args)]
 pub struct DownloadPiece {
@@ -16,7 +16,7 @@ pub struct DownloadPiece {
 
 impl DownloadPiece {
     pub async fn execute(&self) -> crate::Result<()> {
-        let torrent = Torrent::read(&self.path)?;
+        let torrent = Metainfo::read(&self.path)?;
         let info_hash = torrent.info.hash()?;
         let pieces = torrent.pieces();
 
@@ -36,14 +36,14 @@ impl DownloadPiece {
         };
 
         let piece_size = if self.piece == pieces.len() - 1 {
-            let rest = torrent.len() % torrent.plen();
+            let rest = torrent.len() % torrent.piece_len();
             if rest == 0 {
-                torrent.plen()
+                torrent.piece_len()
             } else {
                 rest
             }
         } else {
-            torrent.plen()
+            torrent.piece_len()
         };
 
         let piece = download::piece(&mut peer, self.piece, piece_size).await?;

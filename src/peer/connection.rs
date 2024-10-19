@@ -8,7 +8,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt, BufWriter};
 use tokio::net::TcpStream;
 
 use crate::peer::HandshakePacket;
-use crate::PEER_ID;
+use crate::{Sha1Hash, PEER_ID};
 
 #[derive(Debug, PartialEq)]
 pub enum Frame {
@@ -95,7 +95,7 @@ impl Connection {
         }
     }
 
-    pub async fn handshake(&mut self, info_hash: [u8; 20]) -> crate::Result<HandshakePacket> {
+    pub async fn handshake(&mut self, info_hash: Sha1Hash) -> crate::Result<HandshakePacket> {
         let mut packet = HandshakePacket::new(info_hash, *PEER_ID);
         self.stream
             .write_all(packet.as_bytes())

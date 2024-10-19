@@ -7,39 +7,91 @@
 //! <- unchoke
 //! -> request
 //! <- piece
+//!
 
 use std::io::SeekFrom;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{bail, ensure, Result};
-use bytes::BytesMut;
+use bytes::{Bytes, BytesMut};
 use sha1::{Digest, Sha1};
 use tokio::fs::File;
 use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 use tokio::sync::mpsc;
+use tracing::debug;
 
-use crate::{tracker, Frame, Peer, Torrent};
+use crate::{tracker, Frame, Metainfo, Peer};
 
 /// Max `piece chunk` size, 16 * 1024 bytes (16 kiB)
 const CHUNK_MAX: usize = 1 << 14;
 
 type Queue = Arc<Mutex<Vec<usize>>>;
 
-pub async fn full(torrent: &Torrent, output: impl AsRef<Path>) -> Result<()> {
+pub async fn full(torrent: &Metainfo, output: impl AsRef<Path>) -> Result<()> {
     download(torrent, output).await
 }
 
+// Keep piece states in Mutex for fast updates, since contention is low.
+// Use message passing for piece completion and complex operations.
+// Consider atomics for progress tracking
+
+#[derive(Debug)]
+struct Piece {
+    index: usize,
+    size: usize,
+    data: BytesMut,
+}
+
 #[tracing::instrument(level = "trace", skip(torrent, output))]
-async fn download(torrent: &Torrent, output: impl AsRef<Path>) -> Result<()> {
+async fn download(torrent: &Metainfo, output: impl AsRef<Path>) -> Result<()> {
     let peers = tracker::discover(&torrent).await?;
 
     // State that each worker needs.
     let info_hash = torrent.info.hash()?;
     let file_length = torrent.len();
-    let piece_length = torrent.plen();
+    let piece_length = torrent.piece_len();
     let pieces = torrent.pieces();
     let npieces = pieces.len();
+
+    let mut queue = Vec::new();
+    for index in 0..npieces {
+        queue.push(Piece {
+            index,
+            size: if index == npieces - 1 {
+                let rest = file_length % piece_length;
+                if rest == 0 {
+                    piece_length
+                } else {
+                    rest
+                }
+            } else {
+                piece_length
+            },
+            data: BytesMut::new(),
+        })
+    }
+
+    let queue = (0..npieces)
+        .into_iter()
+        .map(|index| Piece {
+            index,
+            size: if index == npieces - 1 {
+                let rest = file_length % piece_length;
+                if rest == 0 {
+                    piece_length
+                } else {
+                    rest
+                }
+            } else {
+                piece_length
+            },
+            data: BytesMut::new(),
+        })
+        .collect::<Vec<_>>();
+
+    debug!(?queue);
+    todo!();
 
     let (tx, mut rx) = mpsc::channel::<(usize, BytesMut)>(100);
     let queue: Queue = Arc::new(Mutex::new((0..npieces).collect()));
@@ -63,13 +115,15 @@ async fn download(torrent: &Torrent, output: impl AsRef<Path>) -> Result<()> {
 
             peer.send(&Frame::Interested).await?;
 
-            let Some(Frame::Unchoke) = peer.recv().await? else {
+            if let Some(Frame::Unchoke) = peer.recv().await? {
+                peer.chocked = false;
+            } else {
                 bail!("expected unchoke frame")
             };
 
             while let Some(piece_index) = {
-                let mut guard = queue.lock().expect("acquire queue lock");
-                guard.pop()
+                let mut queue = queue.lock().expect("acquire queue lock");
+                queue.pop()
             } {
                 // Check if last piece
                 let piece_size = if piece_index == npieces - 1 {
@@ -100,7 +154,7 @@ async fn download(torrent: &Torrent, output: impl AsRef<Path>) -> Result<()> {
             Some((index, piece)) => {
                 ensure!(hex::encode(Sha1::digest(&piece)) == hex::encode(pieces[index]));
 
-                file.seek(SeekFrom::Start((index * torrent.plen()) as u64))
+                file.seek(SeekFrom::Start((index * torrent.piece_len()) as u64))
                     .await?;
                 file.write_all(&piece).await?;
 
@@ -125,6 +179,8 @@ pub async fn piece(peer: &mut Peer, piece_index: usize, size: usize) -> Result<B
     download_piece(peer, piece_index, size).await
 }
 
+/// Download a piece from a peer. In the future add suport do download a
+/// a piece from multiple peers at the same time.
 #[tracing::instrument(level = "trace", skip(peer))]
 async fn download_piece(peer: &mut Peer, piece_index: usize, size: usize) -> Result<BytesMut> {
     let nchunks = (size + CHUNK_MAX - 1) / CHUNK_MAX; // round up for last chunk.

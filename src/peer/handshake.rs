@@ -1,3 +1,5 @@
+use crate::Sha1Hash;
+
 pub const PROTOCOL: &[u8; 19] = b"BitTorrent protocol";
 
 unsafe fn as_u8_slice<T: Sized>(p: &T) -> &[u8] {
@@ -14,12 +16,12 @@ pub struct HandshakePacket {
     pstrlen: u8,
     pstr: [u8; 19],
     reserved: [u8; 8],
-    info_hash: [u8; 20],
+    info_hash: Sha1Hash,
     peer_id: [u8; 20],
 }
 
 impl HandshakePacket {
-    pub fn new(info_hash: [u8; 20], peer_id: [u8; 20]) -> Self {
+    pub fn new(info_hash: Sha1Hash, peer_id: [u8; 20]) -> Self {
         Self {
             pstrlen: 19,
             pstr: *PROTOCOL,
@@ -83,11 +85,11 @@ impl HandshakePacket {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Torrent;
+    use crate::Metainfo;
 
     #[test]
     fn handshake_packet_as_bytes() {
-        let torrent = Torrent::read("./sample.torrent").unwrap();
+        let torrent = Metainfo::read("./sample.torrent").unwrap();
         let packet = HandshakePacket::new(torrent.info.hash().unwrap(), *crate::PEER_ID);
         let bytes = packet.as_bytes();
         assert_eq!(
@@ -110,7 +112,7 @@ mod tests {
             54, 55, 56, 57, 97, 98, 99, 100, 101, 102,
         ];
         let packet = HandshakePacket::from_bytes(&bytes).expect("parse packet from bytes");
-        let torrent = Torrent::read("./sample.torrent").unwrap();
+        let torrent = Metainfo::read("./sample.torrent").unwrap();
         assert_eq!(packet.info_hash, torrent.info.hash().unwrap());
         assert!(packet.is_valid_protocol());
     }

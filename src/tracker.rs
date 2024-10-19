@@ -4,21 +4,21 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use tracing::trace;
 
-use crate::{Torrent, PEER_ID};
+use crate::{Metainfo, PEER_ID};
 
-#[tracing::instrument(level = "trace", skip(torrent))]
-pub async fn discover(torrent: &Torrent) -> Result<Vec<SocketAddrV4>> {
-    let query = Query::new(String::from_utf8_lossy(PEER_ID), torrent.len());
+#[tracing::instrument(level = "trace", skip(meta))]
+pub async fn discover(meta: &Metainfo) -> Result<Vec<SocketAddrV4>> {
+    let query = Query::new(String::from_utf8_lossy(PEER_ID), meta.len());
     let url = format!(
         "{}?info_hash={}&{}",
-        torrent.announce,
-        torrent.info.urlencode()?,
+        meta.announce,
+        meta.info.urlencode()?,
         serde_urlencoded::to_string(&query).context("encode tracker query")?
     );
     trace!(GET = url);
     let res = reqwest::get(&url).await.context("get tracker info")?;
     trace!(status = ?res.status());
-    let tracker_info = serde_bencode::from_bytes::<Info>(&res.bytes().await?)
+    let tracker_info = serde_bencode::from_bytes::<Response>(&res.bytes().await?)
         .context("decode tracker response")?;
 
     // We will only use the `peers` field for this challenge, ignore the `interval` field for now.
@@ -73,7 +73,7 @@ impl Query {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct Info {
+pub struct Response {
     /// An integer, indicating how often your client should make a request to the tracker in seconds.
     ///
     /// You can ignore this value for the purposes of this challenge.

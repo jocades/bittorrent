@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use clap::Args;
 
-use crate::{tracker, Torrent};
+use crate::{tracker, Metainfo};
 
 #[derive(Args)]
 pub struct Peers {
@@ -11,8 +11,8 @@ pub struct Peers {
 
 impl Peers {
     pub async fn execute(&self) -> crate::Result<()> {
-        let torrent = Torrent::read(&self.path)?;
-        let peers = tracker::discover(&torrent).await?;
+        let meta = Metainfo::read(&self.path)?;
+        let peers = tracker::discover(&meta).await?;
         for addr in peers {
             println!("{addr}");
         }

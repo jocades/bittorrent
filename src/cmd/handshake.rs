@@ -7,7 +7,7 @@ use tokio::{
 };
 
 use crate::peer::HandshakePacket;
-use crate::{Torrent, PEER_ID};
+use crate::{Metainfo, PEER_ID};
 
 #[derive(Args)]
 pub struct Handshake {
@@ -17,10 +17,10 @@ pub struct Handshake {
 
 impl Handshake {
     pub async fn execute(&self) -> crate::Result<()> {
-        let torrent = Torrent::read(&self.path)?;
+        let meta = Metainfo::read(&self.path)?;
         let mut stream = TcpStream::connect(&self.addr).await?;
 
-        let mut packet = HandshakePacket::new(torrent.info.hash()?, *PEER_ID);
+        let mut packet = HandshakePacket::new(meta.info.hash()?, *PEER_ID);
         stream.write_all(packet.as_bytes()).await?;
 
         stream.read_exact(packet.as_bytes_mut()).await?;
