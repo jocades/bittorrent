@@ -30,36 +30,38 @@ pub enum Frame {
     Bitfield(Bytes),
 
     /// Request a piece chunk.
-    Request {
-        // The zero-based piece index.
-        index: u32,
-        /// The zero-based byte offset within the piece
-        /// This'll be 0 for the first block, 2^14 for the second block, 2*2^14
-        /// for the third block etc.
-        begin: u32,
-        /// Generally a power of two unless it gets truncated by the end of the file.
-        /// All current implementations use 2^14 (16 kiB), and close connections
-        /// which request an amount greater than that
-        length: u32,
-    },
+    Request(Request),
 
     /// Correlated with request messages implicitly. It is possible for an unexpected
     /// piece to arrive if choke and unchoke messages are sent in quick succession
     /// and/or transfer is going very slowly.
-    Piece {
-        // The zero-based piece index.
-        index: u32,
-        /// The zero-based byte offset within the piece.
-        begin: u32,
-        /// The data for the piece, usually 2^14 bytes long.
-        chunk: Bytes,
-    },
+    Piece(Chunk),
 
-    Cancel {
-        index: u32,
-        begin: u32,
-        length: u32,
-    },
+    Cancel(Request),
+}
+
+#[derive(Debug, PartialEq)]
+pub struct Request {
+    // The zero-based piece index.
+    pub index: u32,
+    /// The zero-based byte offset within the piece
+    /// This'll be 0 for the first block, 2^14 for the second block, 2*2^14
+    /// for the third block etc.
+    pub begin: u32,
+    /// Generally a power of two unless it gets truncated by the end of the file.
+    /// All current implementations use 2^14 (16 kiB), and close connections
+    /// which request an amount greater than that
+    pub length: u32,
+}
+
+#[derive(Debug, PartialEq)]
+pub struct Chunk {
+    // The zero-based piece index.
+    pub index: u32,
+    /// The zero-based byte offset within the piece.
+    pub begin: u32,
+    /// The data for the piece, usually 2^14 bytes long.
+    pub data: Bytes,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -72,7 +74,7 @@ pub enum Error {
     UnknownKind(u8),
 }
 
-/// A wrapper around the `TcpStream` to send and receive framed messages.
+/// A wrapper around the `TcpStream` to read and write framed messages.
 #[derive(Debug)]
 pub struct Connection {
     stream: BufWriter<TcpStream>,
@@ -98,7 +100,7 @@ impl Connection {
         self.stream
             .write_all(packet.as_bytes())
             .await
-            .context("send handshake packet")?;
+            .context("write handshake packet")?;
         self.stream.flush().await?;
         self.stream
             .read_exact(packet.as_bytes_mut())
@@ -130,7 +132,7 @@ impl Connection {
         }
 
         // Read length marker, this should not fail since we know we have 4 bytes in the buffer.
-        let len = u32::from_be_bytes(self.buf[..4].try_into().unwrap()) as usize;
+        let len = u32::from_be_bytes(self.buf[..4].try_into()?) as usize;
         if len == 0 {
             // `KeepAlive` messsage, skip length marker and continue parsing
             // since we may still have bytes left in the buffer.
@@ -171,21 +173,21 @@ impl Connection {
                 let bitfield = self.buf.split_to(len - 1).freeze();
                 Frame::Bitfield(bitfield)
             }
-            6 => Frame::Request {
+            6 => Frame::Request(Request {
                 index: self.buf.get_u32(),
                 begin: self.buf.get_u32(),
                 length: self.buf.get_u32(),
-            },
-            7 => Frame::Piece {
+            }),
+            7 => Frame::Piece(Chunk {
                 index: self.buf.get_u32(),
                 begin: self.buf.get_u32(),
-                chunk: self.buf.split_to(len - 9).freeze(),
-            },
-            8 => Frame::Cancel {
+                data: self.buf.split_to(len - 9).freeze(),
+            }),
+            8 => Frame::Cancel(Request {
                 index: self.buf.get_u32(),
                 begin: self.buf.get_u32(),
                 length: self.buf.get_u32(),
-            },
+            }),
             n => Err(Error::UnknownKind(n))?,
         };
 
@@ -204,38 +206,19 @@ impl Connection {
                 self.stream.write_u8(u8::from(frame)).await?;
                 self.stream.write_all(bitfield).await?;
             }
-            Frame::Request {
-                index,
-                begin,
-                length,
-            } => {
+            Frame::Request(req) | Frame::Cancel(req) => {
                 self.stream.write_u32(13).await?;
                 self.stream.write_u8(u8::from(frame)).await?;
-                self.stream.write_u32(*index).await?;
-                self.stream.write_u32(*begin).await?;
-                self.stream.write_u32(*length).await?;
+                self.stream.write_u32(req.index).await?;
+                self.stream.write_u32(req.begin).await?;
+                self.stream.write_u32(req.length).await?;
             }
-            Frame::Piece {
-                index,
-                begin,
-                chunk,
-            } => {
-                self.stream.write_u32((9 + chunk.len()) as u32).await?;
+            Frame::Piece(chunk) => {
+                self.stream.write_u32((9 + chunk.data.len()) as u32).await?;
                 self.stream.write_u8(u8::from(frame)).await?;
-                self.stream.write_u32(*index).await?;
-                self.stream.write_u32(*begin).await?;
-                self.stream.write_all(chunk).await?;
-            }
-            Frame::Cancel {
-                index,
-                begin,
-                length,
-            } => {
-                self.stream.write_u32(13).await?;
-                self.stream.write_u8(u8::from(frame)).await?;
-                self.stream.write_u32(*index).await?;
-                self.stream.write_u32(*begin).await?;
-                self.stream.write_u32(*length).await?;
+                self.stream.write_u32(chunk.index).await?;
+                self.stream.write_u32(chunk.begin).await?;
+                self.stream.write_all(&chunk.data).await?;
             }
             // `Choke`, `Unchoke`, `Interested`, and 'NotInterested' have no payload.
             frame => {

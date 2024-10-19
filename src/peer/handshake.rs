@@ -1,6 +1,12 @@
-use super::{as_u8_slice, as_u8_slice_mut};
-
 pub const PROTOCOL: &[u8; 19] = b"BitTorrent protocol";
+
+unsafe fn as_u8_slice<T: Sized>(p: &T) -> &[u8] {
+    std::slice::from_raw_parts((p as *const T) as *const u8, std::mem::size_of::<T>())
+}
+
+unsafe fn as_u8_slice_mut<T: Sized>(p: &mut T) -> &mut [u8] {
+    std::slice::from_raw_parts_mut((p as *mut T) as *mut u8, std::mem::size_of::<T>())
+}
 
 #[repr(C, packed)]
 #[derive(Debug)]

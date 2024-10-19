@@ -1,23 +1,16 @@
 mod connection;
-pub use connection::{Connection, Frame};
+pub use connection::{Chunk, Connection, Frame, Request};
 
 mod handshake;
 pub use handshake::HandshakePacket;
 
-use anyhow::Result;
-use tokio::net::{TcpStream, ToSocketAddrs};
-use tracing::debug;
+use std::net::SocketAddrV4;
+
+use anyhow::{bail, Result};
+use tokio::net::TcpStream;
 
 /// Hardcoded peer id for the challenge
 pub const PEER_ID: &[u8; 20] = b"jordi123456789abcdef";
-
-pub unsafe fn as_u8_slice<T: Sized>(p: &T) -> &[u8] {
-    std::slice::from_raw_parts((p as *const T) as *const u8, std::mem::size_of::<T>())
-}
-
-pub unsafe fn as_u8_slice_mut<T: Sized>(p: &mut T) -> &mut [u8] {
-    std::slice::from_raw_parts_mut((p as *mut T) as *mut u8, std::mem::size_of::<T>())
-}
 
 #[derive(Debug)]
 pub struct Peer {
@@ -26,12 +19,13 @@ pub struct Peer {
 
 impl Peer {
     /// Connect to a peer and try to perform a handshake to establish the connection.
-    pub async fn connect<T: ToSocketAddrs>(addr: T, info_hash: [u8; 20]) -> Result<Self> {
+    #[tracing::instrument(level = "trace", skip(info_hash))]
+    pub async fn connect(addr: SocketAddrV4, info_hash: [u8; 20]) -> Result<Self> {
         let stream = TcpStream::connect(addr).await?;
         let mut conn = Connection::new(stream);
 
         let handshake = conn.handshake(info_hash).await?;
-        debug!("Peer ID: {}", hex::encode(handshake.peer_id()));
+        tracing::trace!("Peer ID: {}", hex::encode(handshake.peer_id()));
 
         Ok(Peer { conn })
     }
@@ -42,5 +36,21 @@ impl Peer {
 
     pub async fn recv(&mut self) -> Result<Option<Frame>> {
         self.conn.read_frame().await
+    }
+
+    #[tracing::instrument(level = "trace")]
+    pub async fn request(&mut self, index: usize, begin: usize, length: usize) -> Result<Chunk> {
+        self.send(&Frame::Request(Request {
+            index: index as u32,
+            begin: begin as u32,
+            length: length as u32,
+        }))
+        .await?;
+
+        let Some(Frame::Piece(chunk)) = self.recv().await? else {
+            bail!("expected piece frame")
+        };
+
+        Ok(chunk)
     }
 }

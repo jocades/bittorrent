@@ -14,6 +14,6 @@ pub struct Download {
 impl Download {
     pub async fn execute(&self) -> crate::Result<()> {
         let torrent = Torrent::read(&self.path)?;
-        download(&torrent, &self.output).await
+        download::full(&torrent, &self.output).await
     }
 }

@@ -26,18 +26,24 @@ const CHUNK_MAX: usize = 1 << 14;
 
 type Queue = Arc<Mutex<Vec<usize>>>;
 
+pub async fn full(torrent: &Torrent, output: impl AsRef<Path>) -> Result<()> {
+    download(torrent, output).await
+}
+
 #[tracing::instrument(level = "trace", skip(torrent, output))]
-pub async fn download(torrent: &Torrent, output: impl AsRef<Path>) -> Result<()> {
+async fn download(torrent: &Torrent, output: impl AsRef<Path>) -> Result<()> {
     let peers = tracker::discover(&torrent).await?;
+
+    // State that each worker needs.
     let info_hash = torrent.info.hash()?;
-    let total_length = torrent.len();
+    let file_length = torrent.len();
     let piece_length = torrent.plen();
     let pieces = torrent.pieces();
     let npieces = pieces.len();
 
     let (tx, mut rx) = mpsc::channel::<(usize, BytesMut)>(100);
     let queue: Queue = Arc::new(Mutex::new((0..npieces).collect()));
-    let mut tasks = Vec::with_capacity(peers.len() /* TODO: make configurable */);
+    let mut tasks = Vec::with_capacity(peers.len());
 
     for addr in peers {
         let tx = tx.clone();
@@ -65,8 +71,9 @@ pub async fn download(torrent: &Torrent, output: impl AsRef<Path>) -> Result<()>
                 let mut guard = queue.lock().expect("acquire queue lock");
                 guard.pop()
             } {
+                // Check if last piece
                 let piece_size = if piece_index == npieces - 1 {
-                    let rest = total_length % piece_length;
+                    let rest = file_length % piece_length;
                     if rest == 0 {
                         piece_length
                     } else {
@@ -81,6 +88,7 @@ pub async fn download(torrent: &Torrent, output: impl AsRef<Path>) -> Result<()>
             }
             Ok(())
         });
+
         tasks.push(task);
     }
 
@@ -88,15 +96,18 @@ pub async fn download(torrent: &Torrent, output: impl AsRef<Path>) -> Result<()>
     let mut completed = 0;
 
     while completed < npieces {
-        if let Some((index, piece)) = rx.recv().await {
-            ensure!(hex::encode(Sha1::digest(&piece)) == hex::encode(pieces[index]));
+        match rx.recv().await {
+            Some((index, piece)) => {
+                ensure!(hex::encode(Sha1::digest(&piece)) == hex::encode(pieces[index]));
 
-            file.seek(SeekFrom::Start((index * torrent.plen()) as u64))
-                .await?;
-            file.write_all(&piece).await?;
+                file.seek(SeekFrom::Start((index * torrent.plen()) as u64))
+                    .await?;
+                file.write_all(&piece).await?;
 
-            completed += 1;
-            eprintln!("Piece {index} completed. Progress: {completed}/{npieces}",);
+                completed += 1;
+                eprintln!("Piece {index} completed. Progress: {completed}/{npieces}",);
+            }
+            None => bail!("all workers have died"),
         }
     }
 
@@ -110,9 +121,13 @@ pub async fn download(torrent: &Torrent, output: impl AsRef<Path>) -> Result<()>
     Ok(())
 }
 
+pub async fn piece(peer: &mut Peer, piece_index: usize, size: usize) -> Result<BytesMut> {
+    download_piece(peer, piece_index, size).await
+}
+
 #[tracing::instrument(level = "trace", skip(peer))]
-pub async fn download_piece(peer: &mut Peer, piece_index: usize, size: usize) -> Result<BytesMut> {
-    let nchunks = (size + CHUNK_MAX - 1) / CHUNK_MAX; // round up for last piece.
+async fn download_piece(peer: &mut Peer, piece_index: usize, size: usize) -> Result<BytesMut> {
+    let nchunks = (size + CHUNK_MAX - 1) / CHUNK_MAX; // round up for last chunk.
     let mut piece = BytesMut::with_capacity(size);
 
     for i in 0..nchunks {
@@ -128,27 +143,13 @@ pub async fn download_piece(peer: &mut Peer, piece_index: usize, size: usize) ->
             CHUNK_MAX
         };
 
-        peer.send(&Frame::Request {
-            index: piece_index as u32,
-            begin: (i * CHUNK_MAX) as u32,
-            length: chunk_size as u32,
-        })
-        .await?;
+        let chunk = peer.request(piece_index, i * CHUNK_MAX, chunk_size).await?;
 
-        let Some(Frame::Piece {
-            index,
-            begin,
-            chunk,
-        }) = peer.recv().await?
-        else {
-            bail!("expected piece frame")
-        };
+        ensure!(chunk.index as usize == piece_index);
+        ensure!(chunk.begin as usize == i * CHUNK_MAX);
+        ensure!(chunk.data.len() == chunk_size);
 
-        ensure!(index as usize == piece_index);
-        ensure!(begin as usize == i * CHUNK_MAX);
-        ensure!(chunk.len() == chunk_size);
-
-        piece.extend(&chunk);
+        piece.extend(&chunk.data);
     }
 
     ensure!(piece.len() == size);
