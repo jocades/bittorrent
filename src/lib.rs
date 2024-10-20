@@ -5,15 +5,19 @@ mod metainfo;
 use metainfo::Metainfo;
 
 mod tracker;
+#[allow(unused_imports)]
 use tracker::Tracker;
 
 mod peer;
 use peer::{Frame, Peer};
 
-mod download;
+mod crafters;
 
 mod torrent;
 use torrent::{Chunk, Torrent};
+
+/// The application protocol.
+pub const PROTOCOL: &[u8; 19] = b"BitTorrent protocol";
 
 /// Hardcoded client id for the challenge (the current users `peer id`).
 pub const CLIENT_ID: &[u8; 20] = b"jordi123456789abcdef";

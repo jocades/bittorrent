@@ -1,6 +1,4 @@
-use crate::Sha1Hash;
-
-pub const PROTOCOL: &[u8; 19] = b"BitTorrent protocol";
+use crate::{PeerId, Sha1Hash, PROTOCOL};
 
 unsafe fn as_u8_slice<T: Sized>(p: &T) -> &[u8] {
     std::slice::from_raw_parts((p as *const T) as *const u8, std::mem::size_of::<T>())
@@ -17,11 +15,11 @@ pub struct HandshakePacket {
     pstr: [u8; 19],
     reserved: [u8; 8],
     info_hash: Sha1Hash,
-    peer_id: [u8; 20],
+    peer_id: PeerId,
 }
 
 impl HandshakePacket {
-    pub fn new(info_hash: Sha1Hash, peer_id: [u8; 20]) -> Self {
+    pub fn new(info_hash: Sha1Hash, peer_id: PeerId) -> Self {
         Self {
             pstrlen: 19,
             pstr: *PROTOCOL,

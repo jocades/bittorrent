@@ -141,7 +141,7 @@ pub(crate) fn chunk_count(piece_size: usize) -> usize {
 }
 
 #[derive(Debug)]
-struct PieceDownload {
+pub(crate) struct PieceDownload {
     index: PieceIndex,
     /// All the chunks of the piece.
     data: BytesMut,
@@ -231,23 +231,16 @@ pub struct Torrent {
     peers: HashMap<SocketAddrV4, task::JoinHandle<Result<()>>>,
     /// The peers returned by the tracker which we can connect.
     available_peers: Vec<SocketAddrV4>,
-    /// The holder of the last channel transmit half.
+    /// The holder of the last channels transmit.
     cmd_tx: Sender,
-    /// The port on which other entities in the system send this torrent
+    /// The channels receive on which other entities in the system send this torrent
     /// messages.
-    ///
-    /// The channel has to be wrapped in a `stream::Fuse` so that we can
-    /// `select!` on it in the torrent event loop.
     cmd_rx: Receiver,
     /// The trackers we can announce to. For now just a their urls.
     trackers: Vec<Box<str>>,
     /// The time the torrent was first started.
     start_time: Option<Instant>,
     /// The total time the torrent has been running.
-    ///
-    /// This is a separate field as `Instant::now() - start_time` cannot be
-    /// relied upon due to the fact that it is possible to pause a torrent, in
-    /// which case we don't want to record the run time.
     run_duration: Duration,
     /// TODO: Remove this, stays here until fixed `Tracker`
     meta: Metainfo,
@@ -332,7 +325,10 @@ impl Torrent {
             }
         }
 
-        info!("shutdown completed succesfully");
+        info!(
+            "Shutdown complete; run duration: {}",
+            self.run_duration.as_secs()
+        );
     }
 
     /// The torrent tick, as in "the tick of a clock", which runs every second
@@ -359,7 +355,7 @@ impl Torrent {
         }
 
         info!("connecting to {conn_count} peer(s)");
-        for addr in self.available_peers.drain(..1) {
+        for addr in self.available_peers.drain(..) {
             let shared = Arc::clone(&self.shared);
             let cmd_tx = self.cmd_tx.clone();
 
@@ -398,7 +394,7 @@ impl Torrent {
                 loop {
                     let Some((index, size)) = peer.shared.piece_picker.lock().unwrap().pick()
                     else {
-                        info!(?peer.addr, "no more pieces to download, shutting down");
+                        info!(?peer.addr, "no more pieces to download, closing connection");
                         break;
                     };
 
@@ -438,8 +434,7 @@ impl Torrent {
                     ensure!(download.data.len() == size);
                     info!(?download.index, "completed");
 
-                    peer.cmd_tx.send(Command::Ping(None))?;
-                    peer.cmd_tx.send(Command::PieceCompletion(download))?;
+                    let _ = peer.cmd_tx.send(Command::PieceCompletion(download));
 
                     // Batch some requests to avoid `send request / read response` cycles.
                     /* let mut outgoing_requests = 0;
@@ -468,6 +463,21 @@ impl Torrent {
 
             self.peers.insert(addr, handle);
         }
+
+        debug!(
+            "STATS: \
+            elapsed {}s",
+            /* download: {} b/s (peak: {} b/s, total: {} b) wasted: {} b \
+            upload: {} b/s (peak: {} b/s, total: {} b)", */
+            self.run_duration.as_secs(),
+            /* self.counters.payload.down.avg(),
+            self.counters.payload.down.peak(),
+            self.counters.payload.down.total(),
+            self.counters.waste.total(),
+            self.counters.payload.up.avg(),
+            self.counters.payload.up.peak(),
+            self.counters.payload.up.total(), */
+        );
 
         Ok(())
     }

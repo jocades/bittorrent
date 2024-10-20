@@ -7,7 +7,7 @@ use anyhow::{bail, ensure, Context};
 use clap::Args;
 use sha1::{Digest, Sha1};
 
-use crate::{download, torrent, tracker, Frame, Metainfo, Peer};
+use crate::{crafters, torrent, tracker, Frame, Metainfo, Peer};
 
 #[derive(Args)]
 pub struct DownloadPiece {
@@ -59,7 +59,7 @@ impl DownloadPiece {
             meta.piece_len()
         };
 
-        let piece = download::piece(&mut peer, self.piece, piece_size).await?;
+        let piece = crafters::piece(&mut peer, self.piece, piece_size).await?;
         ensure!(hex::encode(Sha1::digest(&piece)) == hex::encode(pieces[self.piece]));
 
         tokio::fs::write(&self.output, &piece)

@@ -9,6 +9,8 @@
 //! <- piece
 //!
 
+//! This module is deemed to be dead by the end of the callenge.
+
 #![allow(unused_imports)]
 use std::io::SeekFrom;
 use std::path::Path;
