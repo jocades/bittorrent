@@ -6,8 +6,21 @@ use tracing::trace;
 
 use crate::{Metainfo, CLIENT_ID};
 
+#[derive(Debug)]
+pub struct Tracker {
+    url: String,
+}
+
+impl Tracker {
+    pub fn new(url: String) -> Self {
+        Self { url }
+    }
+
+    // pub async fn discover(&self )
+}
+
 #[tracing::instrument(level = "trace", skip(meta))]
-pub async fn discover(meta: &Metainfo) -> Result<Vec<SocketAddrV4>> {
+pub async fn discover(meta: &Metainfo) -> Result<Response> {
     let query = Query::new(String::from_utf8_lossy(CLIENT_ID), meta.len());
     let url = format!(
         "{}?info_hash={}&{}",
@@ -18,11 +31,9 @@ pub async fn discover(meta: &Metainfo) -> Result<Vec<SocketAddrV4>> {
     trace!(GET = url);
     let res = reqwest::get(&url).await.context("get tracker info")?;
     trace!(status = ?res.status());
-    let tracker_info = serde_bencode::from_bytes::<Response>(&res.bytes().await?)
-        .context("decode tracker response")?;
 
-    // We will only use the `peers` field for this challenge, ignore the `interval` field for now.
-    Ok(tracker_info.peers)
+    Ok(serde_bencode::from_bytes::<Response>(&res.bytes().await?)
+        .context("decode tracker response")?)
 }
 
 /// Note: the info hash field is _not_ included.

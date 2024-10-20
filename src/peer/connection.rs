@@ -169,8 +169,8 @@ impl Connection {
                 length: self.buf.get_u32(),
             }),
             7 => Frame::Piece(Chunk {
-                index: self.buf.get_u32(),
-                begin: self.buf.get_u32(),
+                piece_index: self.buf.get_u32() as usize,
+                offset: self.buf.get_u32(),
                 data: self.buf.split_to(len - 9).freeze(),
             }),
             8 => Frame::Cancel(Request {
@@ -206,8 +206,8 @@ impl Connection {
             Frame::Piece(chunk) => {
                 self.stream.write_u32((9 + chunk.data.len()) as u32).await?;
                 self.stream.write_u8(u8::from(frame)).await?;
-                self.stream.write_u32(chunk.index).await?;
-                self.stream.write_u32(chunk.begin).await?;
+                self.stream.write_u32(chunk.piece_index as u32).await?;
+                self.stream.write_u32(chunk.offset).await?;
                 self.stream.write_all(&chunk.data).await?;
             }
             // `Choke`, `Unchoke`, `Interested`, and 'NotInterested' have no payload.

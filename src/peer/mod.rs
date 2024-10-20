@@ -3,13 +3,14 @@ pub use connection::{Connection, Frame, Request};
 
 mod handshake;
 pub use handshake::HandshakePacket;
+use tracing::trace;
 
-use std::net::SocketAddrV4;
+use std::{net::SocketAddrV4, sync::Arc};
 
 use anyhow::{bail, Result};
 use tokio::{net::TcpStream, sync::mpsc};
 
-use crate::{Chunk, PieceIndex, Sha1Hash};
+use crate::{torrent::Shared, Chunk, PieceIndex, Sha1Hash};
 
 pub type Sender = mpsc::UnboundedSender<Command>;
 
@@ -44,13 +45,15 @@ pub struct Peer {
 
 impl Peer {
     /// Connect to a peer and try to perform a handshake to establish the connection.
-    #[tracing::instrument(level = "trace", skip(info_hash))]
-    pub async fn connect(addr: SocketAddrV4, info_hash: Sha1Hash) -> Result<Self> {
+    #[tracing::instrument(level = "trace", skip(shared))]
+    pub async fn connect(addr: SocketAddrV4, shared: Arc<Shared>) -> Result<Self> {
         // TODO add timeouts.
+        trace!("connecting to peer {addr}");
         let stream = TcpStream::connect(addr).await?;
         let mut conn = Connection::new(stream);
+        trace!("connected to peer {addr}");
 
-        let handshake = conn.handshake(info_hash).await?;
+        let handshake = conn.handshake(shared.info_hash).await?;
         tracing::trace!("Peer ID: {}", hex::encode(handshake.peer_id()));
 
         Ok(Peer {

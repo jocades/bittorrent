@@ -201,8 +201,8 @@ async fn download_piece(peer: &mut Peer, piece_index: usize, size: usize) -> Res
 
         let chunk = peer.request(piece_index, i * CHUNK_MAX, chunk_size).await?;
 
-        ensure!(chunk.index as usize == piece_index);
-        ensure!(chunk.begin as usize == i * CHUNK_MAX);
+        ensure!(chunk.piece_index as usize == piece_index);
+        ensure!(chunk.offset as usize == i * CHUNK_MAX);
         ensure!(chunk.data.len() == chunk_size);
 
         piece.extend(&chunk.data);
