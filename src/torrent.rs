@@ -1,18 +1,22 @@
 #![allow(dead_code)]
 use std::{
     collections::HashMap,
+    io::SeekFrom,
     net::SocketAddrV4,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
 
-use anyhow::{bail, Result};
-use bytes::Bytes;
+use anyhow::{bail, ensure, Result};
+use bytes::{Bytes, BytesMut};
+use sha1::{Digest, Sha1};
+use tokio::fs::File;
+use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 use tokio::select;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::task::{self, JoinHandle};
 use tokio::time::{self, Duration, Instant};
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 
 use crate::{tracker, Frame, Metainfo, Peer, PeerId, PieceIndex, Sha1Hash, Tracker};
 
@@ -61,9 +65,9 @@ struct PiecePicker {
     /// For now just hold a vec and access by piece index, implement better
     /// strategies in the feature to do quick lookups of which pieces we have,
     /// which pieces we are currently intersted in or which we are serving.
-    need: Vec<PieceState>,
+    pub need: Vec<PieceState>,
     /// The torrents general storage information.
-    storage: Storage,
+    pub storage: Storage,
 }
 
 impl PiecePicker {
@@ -75,7 +79,7 @@ impl PiecePicker {
     }
 
     /// A very rustic picking implementation :) Needs further improvement obv.
-    pub fn pick(&mut self) -> Option<PieceIndex> {
+    pub fn pick(&mut self) -> Option<(PieceIndex, usize)> {
         for (index, piece) in self
             .need
             .iter_mut()
@@ -83,10 +87,23 @@ impl PiecePicker {
             .enumerate()
         {
             *piece = PieceState::Downloading(0);
-            return Some(index);
+            return Some((
+                index,
+                if index == self.storage.piece_count - 1 {
+                    self.storage.last_piece_size
+                } else {
+                    self.storage.piece_size
+                },
+            ));
         }
 
         None
+    }
+
+    pub fn mark_complete(&mut self, index: PieceIndex) {
+        // TODO: verification should not be done at this level nor in the piece picker.
+
+        *&mut self.need[index] = PieceState::Complete;
     }
 }
 
@@ -107,11 +124,19 @@ pub struct Chunk {
     pub data: Bytes,
 }
 
+/// Returns the number of chunks in a piece of the given length.
+pub(crate) fn chunk_count(piece_size: usize) -> usize {
+    // all but the last piece are a multiple of the block length, but the
+    // last piece may be shorter so we need to account for this by rounding
+    // up before dividing to get the number of blocks in piece
+    piece_size + (CHUNK_MAX - 1) / CHUNK_MAX
+}
+
 #[derive(Debug)]
 struct PieceDownload {
     index: PieceIndex,
-    size: usize,
-    chunks: Vec<Chunk>,
+    /// All the chunks of the piece.
+    data: BytesMut,
 }
 
 /// Information and methods shared with peer sessions in the torrent.
@@ -141,7 +166,9 @@ pub(crate) type Receiver = UnboundedReceiver<Command>;
 pub(crate) enum Command {
     /// Sent when some blocks were written to disk or an error ocurred while
     /// writing.
-    PieceCompletion(anyhow::Result<PieceCompletion>),
+    /// TODO Have a separate task in charge of handling disk writes.
+    PieceCompletion(PieceDownload),
+    // PieceCompletion(anyhow::Result<PieceCompletion>),
     /// There was an error reading a block.
     /* ReadError {
         block_info: BlockInfo,
@@ -194,10 +221,12 @@ pub struct Torrent {
     conf: Conf,
     /// Information that is shared with peer sessions.
     shared: Arc<Shared>,
-    /// The peers currently in this torrent.
+    /// The peers currently in this torrent with their task handle.
     peers: HashMap<SocketAddrV4, JoinHandle<Result<()>>>,
     /// The peers returned by the tracker which we can connect.
     available_peers: Vec<SocketAddrV4>,
+    /// The holder of the last channel transmit half.
+    cmd_tx: Sender,
     /// The port on which other entities in the system send this torrent
     /// messages.
     ///
@@ -208,60 +237,68 @@ pub struct Torrent {
     trackers: Vec<Box<str>>,
     /// The time the torrent was first started.
     start_time: Option<Instant>,
+    /// The total time the torrent has been running.
+    ///
+    /// This is a separate field as `Instant::now() - start_time` cannot be
+    /// relied upon due to the fact that it is possible to pause a torrent, in
+    /// which case we don't want to record the run time.
+    run_duration: Duration,
     /// TODO: Remove this, stays here until fixed `Tracker`
     meta: Metainfo,
 }
 
 impl Torrent {
     /// Creates a new `Torrent` instance for downloading or seeding a torrent.
-    fn new(meta: Metainfo, conf: Conf) -> (Self, Sender) {
+    fn new(meta: Metainfo, conf: Conf) -> Self {
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
         let storage = Storage::new(&meta, "test_download");
         let piece_picker = PiecePicker::new(storage);
         let trackers = vec![meta.announce.as_str().into()];
 
-        (
-            Self {
-                conf,
-                shared: Arc::new(Shared {
-                    piece_picker: Mutex::new(piece_picker),
-                    info_hash: meta.info.hash().unwrap(),
-                }),
-                peers: HashMap::new(),
-                available_peers: Vec::new(),
-                cmd_rx,
-                trackers,
-                start_time: None,
-                meta,
-            },
+        Self {
+            conf,
+            shared: Arc::new(Shared {
+                piece_picker: Mutex::new(piece_picker),
+                info_hash: meta.info.hash().unwrap(),
+            }),
+            peers: HashMap::new(),
+            available_peers: Vec::new(),
             cmd_tx,
-        )
+            cmd_rx,
+            trackers,
+            start_time: None,
+            run_duration: Duration::default(),
+            meta,
+        }
     }
 
-    async fn run(&mut self) -> Result<()> {
+    /// Called by `run` to setup some inner machinery.
+    async fn start(&mut self) {
         self.start_time = Some(Instant::now());
-        // TODO Spawn tracker peer discovery as a `task` to not block torrent.
-        // TODO Check the number of peers connected and fill the to at least
-        // be on top of the min requester_peers.
+        // TODO Spawn tracker peer discovery as a `task` so we dont block torrent.
         match tracker::discover(&self.meta).await {
             Ok(resp) => {
                 info!("announced {resp:?}");
-                // TODO check which peers we have.
                 self.available_peers.extend(resp.peers);
             }
             Err(e) => {
                 warn!("error announcing to tracker {e}");
             }
         };
+    }
+
+    /// Run this torrent and enter the network!
+    pub async fn run(&mut self) -> Result<()> {
+        self.start().await;
 
         let mut tick_timer = time::interval(Duration::from_secs(1));
         let mut last_tick_time = None;
 
-        // The `Torrent` loop, trigger at least every second by the tick timer.
+        // The `Torrent` loop, triggered at least every second by the tick timer.
         loop {
             select! {
                 tick_time = tick_timer.tick() => self.tick(&mut last_tick_time, tick_time).await?,
-                Some(cmd) = self.cmd_rx.recv() => self.execute(&cmd).await,
+                Some(cmd) = self.cmd_rx.recv() => self.execute(&cmd).await?,
             };
         }
     }
@@ -269,13 +306,14 @@ impl Torrent {
     /// The torrent tick, as in "the tick of a clock", which runs every second
     /// to perform periodic updates.
     ///
-    /// This is when we update statistics and report them to the user, when new
+    /// This is **when** we update statistics and report them to the user, when new
     /// peers are connected, and when periodic announces are made.
     async fn tick(&mut self, last_tick_time: &mut Option<Instant>, now: Instant) -> Result<()> {
         let elapsed_since_last_tick = last_tick_time
             .or(self.start_time)
             .map(|t| now.duration_since(t))
             .unwrap_or_default();
+        self.run_duration += elapsed_since_last_tick;
         *last_tick_time = Some(now);
 
         // Attempt to connect to available peers, if any.
@@ -285,14 +323,17 @@ impl Torrent {
         );
         if conn_count == 0 {
             warn!("no peers to connect to");
+            return Ok(());
         }
 
         for addr in self.available_peers.drain(..conn_count) {
-            let shared = Arc::clone(&self.shared);
             info!("connecting to {conn_count} peer(s)");
 
+            let shared = Arc::clone(&self.shared);
+            let cmd_tx = self.cmd_tx.clone();
+
             let handle = task::spawn(async move {
-                let mut peer = match Peer::connect(addr, shared).await {
+                let mut peer = match Peer::connect(addr, shared, cmd_tx).await {
                     Ok(peer) => peer,
                     Err(why) => {
                         warn!("failed connecting to peer {addr}: {why}");
@@ -306,6 +347,86 @@ impl Torrent {
 
                 peer.send(&Frame::Interested).await?;
 
+                if let Some(Frame::Unchoke) = peer.recv().await? {
+                    peer.is_choking = false;
+                } else {
+                    bail!("expected unchoke frame")
+                };
+
+                if peer.is_choking {
+                    debug!("cannot make requests while chocked");
+                    return Ok(());
+                }
+
+                if !peer.interested {
+                    debug!("cannot make requests while not interested");
+                    return Ok(());
+                }
+
+                loop {
+                    let Some((index, size)) = peer.shared.piece_picker.lock().unwrap().pick()
+                    else {
+                        info!(?peer.addr, "no more pieces to download, shutting down");
+                        break;
+                    };
+
+                    let mut download = PieceDownload {
+                        index,
+                        data: BytesMut::with_capacity(size),
+                    };
+
+                    let chunk_count = chunk_count(size);
+                    for i in 0..chunk_count {
+                        // Check if last chunk.
+                        let chunk_size = if i == chunk_count - 1 {
+                            let rest = size % CHUNK_MAX;
+                            if rest == 0 {
+                                CHUNK_MAX
+                            } else {
+                                rest
+                            }
+                        } else {
+                            CHUNK_MAX
+                        };
+
+                        let chunk = peer.request(index, i * CHUNK_MAX, chunk_size).await?;
+                        trace!(?chunk.piece_index, ?chunk.offset, "received piece chunk");
+
+                        // TODO handle this errors nicely by holding the state
+                        // of each block of the piece, so that it can be resumed.
+                        ensure!(chunk.piece_index as usize == index);
+                        ensure!(chunk.offset as usize == i * CHUNK_MAX);
+                        ensure!(chunk.data.len() == chunk_size);
+
+                        download.data.extend(&chunk.data);
+                    }
+
+                    ensure!(download.data.len() == size);
+
+                    let _ = peer.cmd_tx.send(Command::PieceCompletion(download));
+
+                    // Batch some requests to avoid `send request / read response` cycles.
+                    /* let mut outgoing_requests = 0;
+                    let max_request_queue_len = 5;
+
+                    let pending_chunks: Vec<Chunk> = Vec::new();
+
+                    if outgoing_requests >= max_request_queue_len {
+
+                    } */
+
+                    // NOTE a big assumption is made that all peers have all pieces
+                    // this is most certainly not the case and we first have to check
+                    // wich pieces we have and which ones the peer has with the bitfield message.
+
+                    // We should also immplement tracking of blocks within each piece
+                    // to allow for concurrent downloads of a single piece from multiple
+                    // peers.
+
+                    // trace!(?target_request_queue_len, "sending request batch");
+                    // for _ in 0..target_request_queue_len {}
+                }
+
                 Ok(())
             });
 
@@ -316,7 +437,36 @@ impl Torrent {
     }
 
     /// Executes a command sent from another part of the system.
-    async fn execute(&mut self, _cmd: &Command) {
-        todo!()
+    async fn execute(&mut self, cmd: &Command) -> Result<()> {
+        match cmd {
+            // These logic should be in another task, maybe use tokios `spawn_blocing`
+            // since writing to disk and verifying hashes is expensive and cannot
+            // be done asynchronously. Hence these is a big point of contention in `Torrent`.
+            // The `Disk` task should handle batch writes every N chunks received.
+            Command::PieceCompletion(download) => {
+                let mut file = File::create("test_download").await?;
+
+                let piece_hash = self.meta.pieces()[download.index];
+                if hex::encode(Sha1::digest(&download.data)) != hex::encode(piece_hash) {
+                    // Put piece back in queue, and keep a record of peers who sent us
+                    // corrupted pieces to block them in the future.
+                    {
+                        let mut guard = self.shared.piece_picker.lock().unwrap();
+                        let piece = &mut guard.need[download.index];
+                        *piece = PieceState::Missing;
+                    };
+                    return Ok(());
+                }
+
+                file.seek(SeekFrom::Start(
+                    (download.index * self.meta.piece_len()) as u64,
+                ))
+                .await?;
+                file.write_all(&download.data).await?;
+            }
+            _ => unimplemented!(),
+        };
+
+        Ok(())
     }
 }
