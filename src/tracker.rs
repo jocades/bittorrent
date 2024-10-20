@@ -6,11 +6,13 @@ use tracing::trace;
 
 use crate::{Metainfo, CLIENT_ID};
 
+#[allow(dead_code)]
 #[derive(Debug)]
 pub struct Tracker {
     url: String,
 }
 
+#[allow(dead_code)]
 impl Tracker {
     pub fn new(url: String) -> Self {
         Self { url }

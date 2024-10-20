@@ -13,8 +13,11 @@ use peer::{Frame, Peer};
 
 mod crafters;
 
+mod download;
+use download::{Chunk, PieceDownload};
+
 mod torrent;
-use torrent::{Chunk, Torrent};
+use torrent::Torrent;
 
 /// The application protocol.
 pub const PROTOCOL: &[u8; 19] = b"BitTorrent protocol";

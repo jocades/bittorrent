@@ -10,12 +10,13 @@ use std::{net::SocketAddrV4, sync::Arc};
 use anyhow::{bail, Result};
 use tokio::{net::TcpStream, sync::mpsc};
 
-use crate::torrent;
-use crate::{Chunk, PieceIndex};
+use crate::{torrent, Chunk, PieceIndex};
 
+#[allow(dead_code)]
 pub type Sender = mpsc::UnboundedSender<Command>;
 
 /// The commands peer session can receive.
+#[allow(dead_code)]
 pub(crate) enum Command {
     /// The result of reading a block from disk.
     Chunk(Chunk),
@@ -25,6 +26,7 @@ pub(crate) enum Command {
     Shutdown,
 }
 
+#[allow(dead_code)]
 pub struct Peer {
     pub addr: SocketAddrV4,
     /// The framed connection.
@@ -57,11 +59,11 @@ impl Peer {
         shared: Arc<torrent::Shared>,
         cmd_tx: torrent::Sender,
     ) -> Result<Self> {
-        // TODO add timeouts.
-        trace!("connecting to peer {addr}");
+        // TODO: add timeouts.
+        trace!("connecting to peer");
         let stream = TcpStream::connect(addr).await?;
         let mut conn = Connection::new(stream);
-        trace!("connected to peer {addr}");
+        trace!("connected to peer");
 
         trace!("sending handshake");
         let handshake = conn.handshake(shared.info_hash).await?;

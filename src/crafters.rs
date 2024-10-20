@@ -29,8 +29,6 @@ use crate::{tracker, Frame, Metainfo, Peer};
 /// Max `piece chunk` size, 16 * 1024 bytes (16 kiB)
 const CHUNK_MAX: usize = 1 << 14;
 
-type Queue = Arc<Mutex<Vec<usize>>>;
-
 /* pub async fn full(torrent: &Metainfo, output: impl AsRef<Path>) -> Result<()> {
     download(torrent, output).await
 } */

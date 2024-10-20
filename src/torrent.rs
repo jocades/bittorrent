@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 use std::{
     collections::HashMap,
     io::SeekFrom,
@@ -8,7 +7,7 @@ use std::{
 };
 
 use anyhow::{bail, ensure, Result};
-use bytes::{Bytes, BytesMut};
+use bytes::BytesMut;
 use sha1::{Digest, Sha1};
 use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 use tokio::select;
@@ -19,8 +18,10 @@ use tokio::time::{self, Duration, Instant};
 use tokio::{fs::File, sync::oneshot};
 use tracing::{debug, error, info, instrument, trace, warn};
 
-use crate::{tracker, Frame, Metainfo, Peer, PeerId, PieceIndex, Sha1Hash};
+use crate::download::{chunk_count, CHUNK_MAX};
+use crate::{tracker, Frame, Metainfo, Peer, PeerId, PieceDownload, PieceIndex, Sha1Hash};
 
+#[allow(dead_code)]
 pub(crate) struct Storage {
     total_size: usize,
     piece_count: usize,
@@ -60,10 +61,10 @@ impl Storage {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 enum PieceState {
     Missing,
-    Downloading(usize),
+    Downloading,
     Complete,
 }
 
@@ -92,7 +93,7 @@ impl PiecePicker {
         for (index, piece) in self.need.iter_mut().enumerate() {
             match piece {
                 PieceState::Missing => {
-                    *piece = PieceState::Downloading(0);
+                    *piece = PieceState::Downloading;
                     return Some((
                         index,
                         if index == self.storage.piece_count - 1 {
@@ -110,41 +111,15 @@ impl PiecePicker {
     }
 
     #[instrument(skip(self))]
-    pub fn mark_complete(&mut self, index: PieceIndex) {
+    pub fn mark_complete(&mut self, index: PieceIndex) -> bool {
         *&mut self.need[index] = PieceState::Complete;
+        for piece in self.need.iter() {
+            if *piece != PieceState::Complete {
+                return false;
+            }
+        }
+        true
     }
-}
-
-/// This is the only chunk size we're dealing with (except for possibly the
-/// last chunk).  It is the widely used and accepted 16 KiB.
-const CHUNK_MAX: usize = 1 << 14;
-
-/// A chunk is a fixed size part of a piece, which in turn is a fixed size
-/// part of a torrent. Downloading torrents happen at this chunk level
-/// granularity.
-#[derive(Debug, PartialEq)]
-pub struct Chunk {
-    // The zero-based piece index.
-    pub piece_index: PieceIndex,
-    /// The zero-based byte offset within the piece.
-    pub offset: u32,
-    /// The data of the chunk, usually 2^14 bytes long.
-    pub data: Bytes,
-}
-
-/// Returns the number of chunks in a piece of the given length.
-pub(crate) fn chunk_count(piece_size: usize) -> usize {
-    // all but the last piece are a multiple of the block length, but the
-    // last piece may be shorter so we need to account for this by rounding
-    // up before dividing to get the number of blocks in piece
-    (piece_size + CHUNK_MAX - 1) / CHUNK_MAX
-}
-
-#[derive(Debug)]
-pub(crate) struct PieceDownload {
-    index: PieceIndex,
-    /// All the chunks of the piece.
-    data: BytesMut,
 }
 
 /// Information and methods shared with peer sessions in the torrent.
@@ -173,6 +148,7 @@ pub(crate) type Receiver = UnboundedReceiver<Command>;
 #[derive(Debug)]
 pub(crate) enum Command {
     /// Purely for testing.
+    #[allow(dead_code)]
     Ping(Option<oneshot::Sender<String>>),
     /// Sent when some blocks were written to disk or an error ocurred while
     /// writing.
@@ -185,6 +161,7 @@ pub(crate) enum Command {
         error: ReadError,
     }, */
     /// A message sent only once, after the peer has been connected.
+    #[allow(dead_code)]
     PeerConnected { addr: SocketAddrV4, id: PeerId },
     /// Peer sessions periodically send this message when they have a state
     /// change.
@@ -193,6 +170,7 @@ pub(crate) enum Command {
     ///
     /// This command tells all active peer sessions of torrent to do the same,
     /// waits for them and announces to trackers our exit.
+    #[allow(dead_code)]
     Shutdown,
 }
 
@@ -236,7 +214,8 @@ pub struct Torrent {
     /// The channels receive on which other entities in the system send this torrent
     /// messages.
     cmd_rx: Receiver,
-    /// The trackers we can announce to. For now just a their urls.
+    /// The trackers we can announce to. For now just their urls.
+    #[allow(dead_code)]
     trackers: Vec<Box<str>>,
     /// The time the torrent was first started.
     start_time: Option<Instant>,
@@ -351,7 +330,6 @@ impl Torrent {
         );
         if conn_count == 0 {
             warn!("no peers to connect to");
-            return Ok(());
         }
 
         info!("connecting to {conn_count} peer(s)");
@@ -367,6 +345,9 @@ impl Torrent {
                         return Ok(());
                     }
                 };
+
+                let span = tracing::trace_span!("DOWNLOAD", ?addr);
+                let _enter = span.enter();
 
                 let Some(Frame::Bitfield(_)) = peer.recv().await.unwrap() else {
                     bail!("expected bitfield frame")
@@ -398,7 +379,7 @@ impl Torrent {
                         break;
                     };
 
-                    trace!(?index, ?size, ?peer.addr, "got next piece");
+                    trace!(?index, ?size, "got next piece");
 
                     let mut download = PieceDownload {
                         index,
@@ -521,9 +502,15 @@ impl Torrent {
                 file.write_all(&download.data).await?;
                 info!(?download.index, "PIECE WRITTEN");
 
+                // Mainly for the callenge since it expects the process to exit.
+                let done: bool;
                 {
                     let mut guard = self.shared.piece_picker.lock().unwrap();
-                    guard.mark_complete(download.index);
+                    done = guard.mark_complete(download.index);
+                }
+                info!(?done);
+                if done {
+                    self.shutdown().await
                 }
             }
             _ => unimplemented!(),
