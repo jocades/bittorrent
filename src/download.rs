@@ -9,6 +9,7 @@
 //! <- piece
 //!
 
+#![allow(unused_imports)]
 use std::io::SeekFrom;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -28,22 +29,22 @@ const CHUNK_MAX: usize = 1 << 14;
 
 type Queue = Arc<Mutex<Vec<usize>>>;
 
-pub async fn full(torrent: &Metainfo, output: impl AsRef<Path>) -> Result<()> {
+/* pub async fn full(torrent: &Metainfo, output: impl AsRef<Path>) -> Result<()> {
     download(torrent, output).await
-}
+} */
 
 // Keep piece states in Mutex for fast updates, since contention is low.
 // Use message passing for piece completion and complex operations.
 // Consider atomics for progress tracking
 
-#[derive(Debug)]
+/* #[derive(Debug)]
 struct Piece {
     index: usize,
     size: usize,
     data: BytesMut,
-}
+} */
 
-#[tracing::instrument(level = "trace", skip(torrent, output))]
+/* #[tracing::instrument(level = "trace", skip(torrent, output))]
 async fn download(torrent: &Metainfo, output: impl AsRef<Path>) -> Result<()> {
     let peers = tracker::discover(&torrent).await?;
 
@@ -53,45 +54,6 @@ async fn download(torrent: &Metainfo, output: impl AsRef<Path>) -> Result<()> {
     let piece_length = torrent.piece_len();
     let pieces = torrent.pieces();
     let npieces = pieces.len();
-
-    let mut queue = Vec::new();
-    for index in 0..npieces {
-        queue.push(Piece {
-            index,
-            size: if index == npieces - 1 {
-                let rest = file_length % piece_length;
-                if rest == 0 {
-                    piece_length
-                } else {
-                    rest
-                }
-            } else {
-                piece_length
-            },
-            data: BytesMut::new(),
-        })
-    }
-
-    let queue = (0..npieces)
-        .into_iter()
-        .map(|index| Piece {
-            index,
-            size: if index == npieces - 1 {
-                let rest = file_length % piece_length;
-                if rest == 0 {
-                    piece_length
-                } else {
-                    rest
-                }
-            } else {
-                piece_length
-            },
-            data: BytesMut::new(),
-        })
-        .collect::<Vec<_>>();
-
-    debug!(?queue);
-    todo!();
 
     let (tx, mut rx) = mpsc::channel::<(usize, BytesMut)>(100);
     let queue: Queue = Arc::new(Mutex::new((0..npieces).collect()));
@@ -173,7 +135,7 @@ async fn download(torrent: &Metainfo, output: impl AsRef<Path>) -> Result<()> {
 
     eprintln!("Download complete!");
     Ok(())
-}
+} */
 
 pub async fn piece(peer: &mut Peer, piece_index: usize, size: usize) -> Result<BytesMut> {
     download_piece(peer, piece_index, size).await

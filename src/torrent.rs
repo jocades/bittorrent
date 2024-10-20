@@ -13,14 +13,15 @@ use sha1::{Digest, Sha1};
 use tokio::fs::File;
 use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 use tokio::select;
+use tokio::signal;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
-use tokio::task::{self, JoinHandle};
+use tokio::task;
 use tokio::time::{self, Duration, Instant};
 use tracing::{debug, error, info, trace, warn};
 
 use crate::{tracker, Frame, Metainfo, Peer, PeerId, PieceIndex, Sha1Hash, Tracker};
 
-struct Storage {
+pub(crate) struct Storage {
     total_size: usize,
     piece_count: usize,
     piece_size: usize,
@@ -61,11 +62,11 @@ enum PieceState {
 
 /// Decides which piece is more suitable to download next. At the moment it is
 /// just a queue.
-struct PiecePicker {
+pub struct PiecePicker {
     /// For now just hold a vec and access by piece index, implement better
     /// strategies in the feature to do quick lookups of which pieces we have,
     /// which pieces we are currently intersted in or which we are serving.
-    pub need: Vec<PieceState>,
+    need: Vec<PieceState>,
     /// The torrents general storage information.
     pub storage: Storage,
 }
@@ -80,29 +81,27 @@ impl PiecePicker {
 
     /// A very rustic picking implementation :) Needs further improvement obv.
     pub fn pick(&mut self) -> Option<(PieceIndex, usize)> {
-        for (index, piece) in self
-            .need
-            .iter_mut()
-            .filter(|p| matches!(p, PieceState::Missing))
-            .enumerate()
-        {
-            *piece = PieceState::Downloading(0);
-            return Some((
-                index,
-                if index == self.storage.piece_count - 1 {
-                    self.storage.last_piece_size
-                } else {
-                    self.storage.piece_size
-                },
-            ));
+        for (index, piece) in self.need.iter_mut().enumerate() {
+            match piece {
+                PieceState::Missing => {
+                    *piece = PieceState::Downloading(0);
+                    return Some((
+                        index,
+                        if index == self.storage.piece_count - 1 {
+                            self.storage.last_piece_size
+                        } else {
+                            self.storage.piece_size
+                        },
+                    ));
+                }
+                _ => (),
+            }
         }
 
         None
     }
 
     pub fn mark_complete(&mut self, index: PieceIndex) {
-        // TODO: verification should not be done at this level nor in the piece picker.
-
         *&mut self.need[index] = PieceState::Complete;
     }
 }
@@ -195,14 +194,10 @@ pub(crate) struct PieceCompletion {
     pub is_valid: bool,
 }
 
-struct PeerSession {
-    // tx:
-}
-
 /// The `Torrent` configuration.
 pub struct Conf {
     /// The max number of connected peers the torrent should have.
-    max_connections: usize,
+    pub max_connections: usize,
 }
 
 impl Default for Conf {
@@ -222,7 +217,7 @@ pub struct Torrent {
     /// Information that is shared with peer sessions.
     shared: Arc<Shared>,
     /// The peers currently in this torrent with their task handle.
-    peers: HashMap<SocketAddrV4, JoinHandle<Result<()>>>,
+    peers: HashMap<SocketAddrV4, task::JoinHandle<Result<()>>>,
     /// The peers returned by the tracker which we can connect.
     available_peers: Vec<SocketAddrV4>,
     /// The holder of the last channel transmit half.
@@ -249,7 +244,7 @@ pub struct Torrent {
 
 impl Torrent {
     /// Creates a new `Torrent` instance for downloading or seeding a torrent.
-    fn new(meta: Metainfo, conf: Conf) -> Self {
+    pub fn new(meta: Metainfo, conf: Conf) -> Self {
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
         let storage = Storage::new(&meta, "test_download");
         let piece_picker = PiecePicker::new(storage);
@@ -274,6 +269,7 @@ impl Torrent {
 
     /// Called by `run` to setup some inner machinery.
     async fn start(&mut self) {
+        info!("torrent started");
         self.start_time = Some(Instant::now());
         // TODO Spawn tracker peer discovery as a `task` so we dont block torrent.
         match tracker::discover(&self.meta).await {
@@ -299,8 +295,33 @@ impl Torrent {
             select! {
                 tick_time = tick_timer.tick() => self.tick(&mut last_tick_time, tick_time).await?,
                 Some(cmd) = self.cmd_rx.recv() => self.execute(&cmd).await?,
+                _ = signal::ctrl_c() => {
+                    self.shutdown().await;
+                    break;
+                },
             };
         }
+        Ok(())
+    }
+
+    async fn shutdown(&mut self) {
+        for (addr, handle) in self.peers.drain() {
+            match handle.await {
+                Ok(result) => match result {
+                    Ok(_) => {
+                        info!("connection with peer {addr} closed succesfully");
+                    }
+                    Err(e) => {
+                        error!("error closing connection with peer {addr}: {e}");
+                    }
+                },
+                Err(e) => {
+                    error!("sutdown handle error: {e}");
+                }
+            }
+        }
+
+        info!("shutdown completed succesfully");
     }
 
     /// The torrent tick, as in "the tick of a clock", which runs every second
@@ -326,9 +347,8 @@ impl Torrent {
             return Ok(());
         }
 
-        for addr in self.available_peers.drain(..conn_count) {
-            info!("connecting to {conn_count} peer(s)");
-
+        info!("connecting to {conn_count} peer(s)");
+        for addr in self.available_peers.drain(..1) {
             let shared = Arc::clone(&self.shared);
             let cmd_tx = self.cmd_tx.clone();
 
@@ -341,13 +361,14 @@ impl Torrent {
                     }
                 };
 
-                let Some(Frame::Bitfield(_)) = peer.recv().await? else {
+                let Some(Frame::Bitfield(_)) = peer.recv().await.unwrap() else {
                     bail!("expected bitfield frame")
                 };
 
                 peer.send(&Frame::Interested).await?;
+                peer.interested = true;
 
-                if let Some(Frame::Unchoke) = peer.recv().await? {
+                if let Some(Frame::Unchoke) = peer.recv().await.unwrap() {
                     peer.is_choking = false;
                 } else {
                     bail!("expected unchoke frame")
@@ -370,6 +391,8 @@ impl Torrent {
                         break;
                     };
 
+                    trace!(?index, ?size, ?peer.addr, "got next piece");
+
                     let mut download = PieceDownload {
                         index,
                         data: BytesMut::with_capacity(size),
@@ -390,7 +413,7 @@ impl Torrent {
                         };
 
                         let chunk = peer.request(index, i * CHUNK_MAX, chunk_size).await?;
-                        trace!(?chunk.piece_index, ?chunk.offset, "received piece chunk");
+                        trace!(?chunk.piece_index, chunk_index=i, ?chunk.offset, "received piece chunk");
 
                         // TODO handle this errors nicely by holding the state
                         // of each block of the piece, so that it can be resumed.
@@ -402,6 +425,7 @@ impl Torrent {
                     }
 
                     ensure!(download.data.len() == size);
+                    info!(?download.index, "completed");
 
                     let _ = peer.cmd_tx.send(Command::PieceCompletion(download));
 
@@ -444,6 +468,7 @@ impl Torrent {
             // be done asynchronously. Hence these is a big point of contention in `Torrent`.
             // The `Disk` task should handle batch writes every N chunks received.
             Command::PieceCompletion(download) => {
+                trace!(?download.index, "received piece completion");
                 let mut file = File::create("test_download").await?;
 
                 let piece_hash = self.meta.pieces()[download.index];
@@ -463,6 +488,11 @@ impl Torrent {
                 ))
                 .await?;
                 file.write_all(&download.data).await?;
+
+                {
+                    let mut guard = self.shared.piece_picker.lock().unwrap();
+                    guard.mark_complete(download.index);
+                }
             }
             _ => unimplemented!(),
         };

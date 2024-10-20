@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use clap::Args;
 
-use crate::{download, Metainfo};
+use crate::{torrent, Metainfo, Torrent};
 
 #[derive(Args, Debug)]
 pub struct Download {
@@ -13,7 +13,9 @@ pub struct Download {
 
 impl Download {
     pub async fn execute(&self) -> crate::Result<()> {
-        let torrent = Metainfo::read(&self.path)?;
-        download::full(&torrent, &self.output).await
+        let meta = Metainfo::read(&self.path)?;
+        let mut torrent = Torrent::new(meta, torrent::Conf::default());
+        torrent.run().await?;
+        Ok(())
     }
 }

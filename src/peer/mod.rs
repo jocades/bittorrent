@@ -11,7 +11,7 @@ use anyhow::{bail, Result};
 use tokio::{net::TcpStream, sync::mpsc};
 
 use crate::torrent;
-use crate::{Chunk, PieceIndex, Sha1Hash};
+use crate::{Chunk, PieceIndex};
 
 pub type Sender = mpsc::UnboundedSender<Command>;
 
@@ -51,7 +51,7 @@ pub struct Peer {
 
 impl Peer {
     /// Connect to a peer and try to perform a handshake to establish the connection.
-    #[instrument(level = "trace", skip(shared))]
+    #[instrument(level = "trace", skip(shared, cmd_tx))]
     pub async fn connect(
         addr: SocketAddrV4,
         shared: Arc<torrent::Shared>,
@@ -97,11 +97,10 @@ impl Peer {
         trace!(?self.addr, ?request, "sending request");
         self.send(&Frame::Request(request)).await?;
 
-        let Some(Frame::Piece(chunk)) = self.recv().await? else {
-            bail!("expected piece frame")
-        };
-
-        Ok(chunk)
+        match self.recv().await? {
+            Some(Frame::Piece(chunk)) => Ok(chunk),
+            other => bail!("expected piece frame got {other:?}"),
+        }
     }
 
     #[instrument(level = "trace", skip(self))]

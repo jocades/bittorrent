@@ -12,8 +12,8 @@ pub struct Peers {
 impl Peers {
     pub async fn execute(&self) -> crate::Result<()> {
         let meta = Metainfo::read(&self.path)?;
-        let peers = tracker::discover(&meta).await?;
-        for addr in peers {
+        let resp = tracker::discover(&meta).await?;
+        for addr in resp.peers {
             println!("{addr}");
         }
         Ok(())
