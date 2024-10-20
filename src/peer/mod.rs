@@ -57,6 +57,7 @@ impl Peer {
         shared: Arc<torrent::Shared>,
         cmd_tx: torrent::Sender,
     ) -> Result<Self> {
+        let _ = cmd_tx.send(torrent::Command::Ping(None));
         // TODO add timeouts.
         trace!("connecting to peer {addr}");
         let stream = TcpStream::connect(addr).await?;

@@ -12,7 +12,10 @@ async fn main() -> Result<()> {
         .add_directive("bittorrent=trace".parse()?)
         .add_directive("hyper::proto=info".parse()?); // Remove noise from external crate logs
 
-    tracing_subscriber::fmt().with_env_filter(filter).init();
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .compact()
+        .init();
 
     let cli = Cli::parse();
     cli.command.execute().await

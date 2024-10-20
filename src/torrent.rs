@@ -10,16 +10,16 @@ use std::{
 use anyhow::{bail, ensure, Result};
 use bytes::{Bytes, BytesMut};
 use sha1::{Digest, Sha1};
-use tokio::fs::File;
 use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 use tokio::select;
 use tokio::signal;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::task;
 use tokio::time::{self, Duration, Instant};
-use tracing::{debug, error, info, trace, warn};
+use tokio::{fs::File, sync::oneshot};
+use tracing::{debug, error, info, instrument, trace, warn};
 
-use crate::{tracker, Frame, Metainfo, Peer, PeerId, PieceIndex, Sha1Hash, Tracker};
+use crate::{tracker, Frame, Metainfo, Peer, PeerId, PieceIndex, Sha1Hash};
 
 pub(crate) struct Storage {
     total_size: usize,
@@ -39,9 +39,16 @@ impl Storage {
     /// Extracts storage related information from the torrent metainfo.
     pub fn new(meta: &Metainfo, dest: impl AsRef<Path>) -> Self {
         let total_size = meta.len();
-        let piece_count = meta.pieces().len();
         let piece_size = meta.piece_len();
+        let piece_count = meta.pieces().len();
         let last_piece_size = total_size - piece_size * (piece_count - 1);
+        trace!(
+            ?total_size,
+            ?piece_size,
+            ?piece_count,
+            ?last_piece_size,
+            "storage"
+        );
 
         Storage {
             total_size,
@@ -53,7 +60,7 @@ impl Storage {
     }
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 enum PieceState {
     Missing,
     Downloading(usize),
@@ -81,6 +88,7 @@ impl PiecePicker {
 
     /// A very rustic picking implementation :) Needs further improvement obv.
     pub fn pick(&mut self) -> Option<(PieceIndex, usize)> {
+        trace!(?self.need, "PICK");
         for (index, piece) in self.need.iter_mut().enumerate() {
             match piece {
                 PieceState::Missing => {
@@ -101,6 +109,7 @@ impl PiecePicker {
         None
     }
 
+    #[instrument(skip(self))]
     pub fn mark_complete(&mut self, index: PieceIndex) {
         *&mut self.need[index] = PieceState::Complete;
     }
@@ -128,7 +137,7 @@ pub(crate) fn chunk_count(piece_size: usize) -> usize {
     // all but the last piece are a multiple of the block length, but the
     // last piece may be shorter so we need to account for this by rounding
     // up before dividing to get the number of blocks in piece
-    piece_size + (CHUNK_MAX - 1) / CHUNK_MAX
+    (piece_size + CHUNK_MAX - 1) / CHUNK_MAX
 }
 
 #[derive(Debug)]
@@ -163,6 +172,8 @@ pub(crate) type Receiver = UnboundedReceiver<Command>;
 /// engine.
 #[derive(Debug)]
 pub(crate) enum Command {
+    /// Purely for testing.
+    Ping(Option<oneshot::Sender<String>>),
     /// Sent when some blocks were written to disk or an error ocurred while
     /// writing.
     /// TODO Have a separate task in charge of handling disk writes.
@@ -185,14 +196,14 @@ pub(crate) enum Command {
     Shutdown,
 }
 
-/// The type returned on completing a piece.
+/* /// The type returned on completing a piece.
 #[derive(Debug)]
 pub(crate) struct PieceCompletion {
     /// The index of the piece.
     pub index: PieceIndex,
     /// Whether the piece is valid. If it's not, it's not written to disk.
     pub is_valid: bool,
-}
+} */
 
 /// The `Torrent` configuration.
 pub struct Conf {
@@ -294,7 +305,7 @@ impl Torrent {
         loop {
             select! {
                 tick_time = tick_timer.tick() => self.tick(&mut last_tick_time, tick_time).await?,
-                Some(cmd) = self.cmd_rx.recv() => self.execute(&cmd).await?,
+                Some(cmd) = self.cmd_rx.recv() => self.execute(cmd).await?,
                 _ = signal::ctrl_c() => {
                     self.shutdown().await;
                     break;
@@ -413,7 +424,7 @@ impl Torrent {
                         };
 
                         let chunk = peer.request(index, i * CHUNK_MAX, chunk_size).await?;
-                        trace!(?chunk.piece_index, chunk_index=i, ?chunk.offset, "received piece chunk");
+                        trace!(?chunk.piece_index, chunk_index=i, ?chunk.offset, ?chunk_count, "received piece chunk");
 
                         // TODO handle this errors nicely by holding the state
                         // of each block of the piece, so that it can be resumed.
@@ -427,7 +438,8 @@ impl Torrent {
                     ensure!(download.data.len() == size);
                     info!(?download.index, "completed");
 
-                    let _ = peer.cmd_tx.send(Command::PieceCompletion(download));
+                    peer.cmd_tx.send(Command::Ping(None))?;
+                    peer.cmd_tx.send(Command::PieceCompletion(download))?;
 
                     // Batch some requests to avoid `send request / read response` cycles.
                     /* let mut outgoing_requests = 0;
@@ -461,17 +473,25 @@ impl Torrent {
     }
 
     /// Executes a command sent from another part of the system.
-    async fn execute(&mut self, cmd: &Command) -> Result<()> {
+    async fn execute(&mut self, cmd: Command) -> Result<()> {
+        info!("EXECUTE");
         match cmd {
+            Command::Ping(resp_tx) => {
+                trace!("ping");
+                if let Some(resp_tx) = resp_tx {
+                    let _ = resp_tx.send("ok".into());
+                }
+            }
             // These logic should be in another task, maybe use tokios `spawn_blocing`
             // since writing to disk and verifying hashes is expensive and cannot
             // be done asynchronously. Hence these is a big point of contention in `Torrent`.
             // The `Disk` task should handle batch writes every N chunks received.
             Command::PieceCompletion(download) => {
-                trace!(?download.index, "received piece completion");
+                trace!("piece completion");
                 let mut file = File::create("test_download").await?;
 
                 let piece_hash = self.meta.pieces()[download.index];
+                trace!("veryfying hash");
                 if hex::encode(Sha1::digest(&download.data)) != hex::encode(piece_hash) {
                     // Put piece back in queue, and keep a record of peers who sent us
                     // corrupted pieces to block them in the future.
@@ -479,6 +499,7 @@ impl Torrent {
                         let mut guard = self.shared.piece_picker.lock().unwrap();
                         let piece = &mut guard.need[download.index];
                         *piece = PieceState::Missing;
+                        trace!("invalid piece");
                     };
                     return Ok(());
                 }
@@ -488,6 +509,7 @@ impl Torrent {
                 ))
                 .await?;
                 file.write_all(&download.data).await?;
+                info!(?download.index, "PIECE WRITTEN");
 
                 {
                     let mut guard = self.shared.piece_picker.lock().unwrap();
