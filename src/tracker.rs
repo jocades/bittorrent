@@ -4,11 +4,11 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use tracing::trace;
 
-use crate::{Metainfo, PEER_ID};
+use crate::{Metainfo, CLIENT_ID};
 
 #[tracing::instrument(level = "trace", skip(meta))]
 pub async fn discover(meta: &Metainfo) -> Result<Vec<SocketAddrV4>> {
-    let query = Query::new(String::from_utf8_lossy(PEER_ID), meta.len());
+    let query = Query::new(String::from_utf8_lossy(CLIENT_ID), meta.len());
     let url = format!(
         "{}?info_hash={}&{}",
         meta.announce,

@@ -90,7 +90,7 @@ mod tests {
     #[test]
     fn handshake_packet_as_bytes() {
         let torrent = Metainfo::read("./sample.torrent").unwrap();
-        let packet = HandshakePacket::new(torrent.info.hash().unwrap(), *crate::PEER_ID);
+        let packet = HandshakePacket::new(torrent.info.hash().unwrap(), *crate::CLIENT_ID);
         let bytes = packet.as_bytes();
         assert_eq!(
             bytes,

@@ -45,6 +45,7 @@ pub struct Info {
     /// it represents a set of files which go in a directory structure.
     ///
     /// In the single file case, length maps to the length of the file in bytes.
+    #[serde(rename = "length")]
     len: usize,
 
     /// For the purposes of the other keys, the multi-file case is treated as

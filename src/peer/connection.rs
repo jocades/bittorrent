@@ -8,7 +8,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt, BufWriter};
 use tokio::net::TcpStream;
 
 use crate::peer::HandshakePacket;
-use crate::{Sha1Hash, PEER_ID};
+use crate::{Chunk, Sha1Hash, CLIENT_ID};
 
 #[derive(Debug, PartialEq)]
 pub enum Frame {
@@ -54,16 +54,6 @@ pub struct Request {
     pub length: u32,
 }
 
-#[derive(Debug, PartialEq)]
-pub struct Chunk {
-    // The zero-based piece index.
-    pub index: u32,
-    /// The zero-based byte offset within the piece.
-    pub begin: u32,
-    /// The data for the piece, usually 2^14 bytes long.
-    pub data: Bytes,
-}
-
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("protocol error; connection reset by peer")]
@@ -96,7 +86,7 @@ impl Connection {
     }
 
     pub async fn handshake(&mut self, info_hash: Sha1Hash) -> crate::Result<HandshakePacket> {
-        let mut packet = HandshakePacket::new(info_hash, *PEER_ID);
+        let mut packet = HandshakePacket::new(info_hash, *CLIENT_ID);
         self.stream
             .write_all(packet.as_bytes())
             .await

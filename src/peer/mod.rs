@@ -1,5 +1,5 @@
 mod connection;
-pub use connection::{Chunk, Connection, Frame, Request};
+pub use connection::{Connection, Frame, Request};
 
 mod handshake;
 pub use handshake::HandshakePacket;
@@ -7,12 +7,21 @@ pub use handshake::HandshakePacket;
 use std::net::SocketAddrV4;
 
 use anyhow::{bail, Result};
-use tokio::net::TcpStream;
+use tokio::{net::TcpStream, sync::mpsc};
 
-use crate::Sha1Hash;
+use crate::{Chunk, PieceIndex, Sha1Hash};
 
-/// Hardcoded peer id for the challenge
-pub const PEER_ID: &[u8; 20] = b"jordi123456789abcdef";
+pub type Sender = mpsc::UnboundedSender<Command>;
+
+/// The commands peer session can receive.
+pub(crate) enum Command {
+    /// The result of reading a block from disk.
+    Chunk(Chunk),
+    /// Notifies this peer session that a new piece is available.
+    PieceCompletion(PieceIndex),
+    /// Eventually shut down the peer session.
+    Shutdown,
+}
 
 #[derive(Debug)]
 pub struct Peer {
@@ -24,17 +33,20 @@ pub struct Peer {
     /// be discarded by the remote peer.
     pub chocked: bool,
     /// Whether this peer is choking us.
-    pub choking: bool,
+    pub is_choking: bool,
     /// Whether or not the remote peer is interested in something this client
     /// has to offer. This is a notification that the remote peer will begin
     /// requesting blocks when the client unchokes them.
     pub interested: bool,
+    /// Wether the peer is interested in a piece we have.
+    pub is_interested: bool,
 }
 
 impl Peer {
     /// Connect to a peer and try to perform a handshake to establish the connection.
     #[tracing::instrument(level = "trace", skip(info_hash))]
     pub async fn connect(addr: SocketAddrV4, info_hash: Sha1Hash) -> Result<Self> {
+        // TODO add timeouts.
         let stream = TcpStream::connect(addr).await?;
         let mut conn = Connection::new(stream);
 
@@ -44,8 +56,9 @@ impl Peer {
         Ok(Peer {
             conn,
             chocked: true,
-            choking: true,
+            is_choking: true,
             interested: false,
+            is_interested: false,
         })
     }
 
