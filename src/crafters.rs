@@ -17,7 +17,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{bail, ensure, Result};
-use bytes::{Bytes, BytesMut};
+use tokio_util::bytes::{Bytes, BytesMut};
 use sha1::{Digest, Sha1};
 use tokio::fs::File;
 use tokio::io::{AsyncSeekExt, AsyncWriteExt};

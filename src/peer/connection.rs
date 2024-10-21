@@ -3,7 +3,7 @@
 use std::ops::Deref;
 
 use anyhow::Context;
-use bytes::{Buf, Bytes, BytesMut};
+use tokio_util::bytes::{Buf, Bytes, BytesMut};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufWriter};
 use tokio::net::TcpStream;
 
@@ -85,6 +85,11 @@ impl Connection {
         }
     }
 
+    /// Attempt to perform a handshake. This `Frame` is different from the rest,
+    /// it is only used **once** at the beggining of the connection.
+    ///
+    /// Hence the use of a separate [`HandshakePacket`] type which is reused to
+    /// allocate the handshake response.
     pub async fn handshake(&mut self, info_hash: Sha1Hash) -> crate::Result<HandshakePacket> {
         let mut packet = HandshakePacket::new(info_hash, *CLIENT_ID);
         self.stream
@@ -99,14 +104,36 @@ impl Connection {
         Ok(packet)
     }
 
+    /// Read a single `Frame` value from the underlying stream.
+    ///
+    /// Waits until it has retrieved enough data to parse a frame.
+    /// Any data remaining in the read buffer after the frame has been parsed is
+    /// kept there for the next call to `read_frame`.
+    ///
+    /// # Returns
+    ///
+    /// On success, the received frame is returned. If the `TcpStream` is
+    /// closed in a way that doesn't break a frame in half, it returns `None`.
+    /// Otherwise, an error is returned.
     pub async fn read_frame(&mut self) -> crate::Result<Option<Frame>> {
         loop {
+            // Attempt to parse a frame from the buffered data. If enough data
+            // has been buffered, the frame is returned
             if let Some(frame) = self.parse_frame()? {
                 return Ok(Some(frame));
             }
 
+            // There is not enough buffered data to read a frame. Attempt to
+            // read more data from the socket.
+            //
+            // On success, the number of bytes is returned. `0` indicates "end
+            // of stream"
             if 0 == self.stream.read_buf(&mut self.buf).await? {
                 if self.buf.is_empty() {
+                    // The remote closed the connection. For this to be a clean
+                    // shutdown, there should be no data in the read buffer. If
+                    // there is, this means that the peer closed the socket while
+                    // sending a frame
                     return Ok(None);
                 } else {
                     Err(Error::ConnectionReset)?
@@ -115,6 +142,10 @@ impl Connection {
         }
     }
 
+    /// Tries to parse a frame from the buffer. If the buffer contains enough
+    /// data, the frame is returned and the data removed from the buffer. If not
+    /// enough data has been buffered yet, `Ok(None)` is returned. If the
+    /// buffered data does not represent a valid frame, `Err` is returned
     fn parse_frame(&mut self) -> crate::Result<Option<Frame>> {
         if self.buf.len() < U32_SIZE {
             // Not enough data to read length marker.
@@ -184,6 +215,14 @@ impl Connection {
         Ok(Some(frame))
     }
 
+    /// Write a single `Frame` value to the underlying stream.
+    ///
+    /// The `Frame` value is written to the socket using the various `write_*`
+    /// functions provided by `AsyncWrite`. Calling these functions directly on
+    /// a `TcpStream` is **not** advised, as this will result in a large number of
+    /// syscalls. However, it is fine to call these functions on a *buffered*
+    /// write stream. The data will be written to the buffer. Once the buffer is
+    /// full, it is flushed to the underlying socket.
     pub async fn write_frame(&mut self, frame: &Frame) -> crate::Result<()> {
         match frame {
             Frame::Have(index) => {

@@ -1,4 +1,4 @@
-use bytes::{BufMut, BytesMut};
+use tokio_util::bytes::{BufMut, BytesMut};
 use tracing::debug;
 
 #[repr(C)]

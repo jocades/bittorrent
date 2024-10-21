@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use clap::Args;
+use tokio::signal;
 
 use crate::{torrent, Metainfo, Torrent};
 
@@ -13,9 +14,10 @@ pub struct Download {
 
 impl Download {
     pub async fn execute(&self) -> crate::Result<()> {
-        let meta = Metainfo::read(&self.path)?;
-        let mut torrent = Torrent::new(meta, torrent::Conf::default());
-        torrent.run().await?;
+        // let meta = Metainfo::read(&self.path)?;
+        // let mut torrent = Torrent::new(meta, torrent::Conf::default());
+        // torrent.run().await?;
+        torrent::run(&self.path, signal::ctrl_c()).await;
         Ok(())
     }
 }

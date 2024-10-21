@@ -1,5 +1,6 @@
 use std::{
     collections::HashMap,
+    future::Future,
     io::SeekFrom,
     net::SocketAddrV4,
     path::{Path, PathBuf},
@@ -7,19 +8,53 @@ use std::{
 };
 
 use anyhow::{bail, ensure, Result};
-use bytes::BytesMut;
 use sha1::{Digest, Sha1};
-use tokio::io::{AsyncSeekExt, AsyncWriteExt};
-use tokio::select;
-use tokio::signal;
-use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
-use tokio::task;
-use tokio::time::{self, Duration, Instant};
-use tokio::{fs::File, sync::oneshot};
-use tracing::{debug, error, info, instrument, trace, warn};
+use tokio::{
+    fs::File,
+    io::{AsyncSeekExt, AsyncWriteExt},
+    net::TcpStream,
+    select, signal,
+    sync::{
+        mpsc::{self, UnboundedReceiver, UnboundedSender},
+        oneshot,
+    },
+    task,
+    time::{self, Duration, Instant},
+};
+use tokio_util::bytes::BytesMut;
+use tracing::{debug, error, info, instrument, trace, warn, Instrument};
 
-use crate::download::{chunk_count, CHUNK_MAX};
+use crate::{
+    download::{chunk_count, CHUNK_MAX},
+    peer::{self, Connection},
+};
 use crate::{tracker, Frame, Metainfo, Peer, PeerId, PieceDownload, PieceIndex, Sha1Hash};
+
+pub async fn run(path: impl AsRef<Path>, shutdown: impl Future) {
+    let Ok(meta) = Metainfo::read(path.as_ref()) else {
+        error!("failed reading metainfo file");
+        return;
+    };
+
+    let mut torrent = Torrent::new(meta, Conf::default());
+
+    select! {
+        res = torrent.run() => {
+            // If an error is received here, the torrent has failed multiple
+            // times and is giving up and shutting down.
+            //
+            // Errors encountered when running the torrent do not bubble up to
+            // this point.
+            if let Err(e) = res {
+                error!(cause = %e, "failed to run");
+            }
+        }
+        _ = shutdown => {
+            // The shutdown signal passed by the caller has been received.
+            info!("shutting down");
+        }
+    }
+}
 
 #[allow(dead_code)]
 pub(crate) struct Storage {
@@ -68,15 +103,17 @@ enum PieceState {
     Complete,
 }
 
-/// Decides which piece is more suitable to download next. At the moment it is
-/// just a queue.
+/// Also known as `PieceManger`. Is in charge of handling the pices of a
+/// specific torrent, which ones we have and in which state they are. In the
+/// future implement logic to decide which piece is more suitable to download
+/// next. At the moment the implementation is very poor.
 pub struct PiecePicker {
     /// For now just hold a vec and access by piece index, implement better
     /// strategies in the feature to do quick lookups of which pieces we have,
     /// which pieces we are currently intersted in or which we are serving.
     need: Vec<PieceState>,
     /// The torrents general storage information.
-    pub storage: Storage,
+    storage: Storage,
 }
 
 impl PiecePicker {
@@ -89,7 +126,7 @@ impl PiecePicker {
 
     /// A very rustic picking implementation :) Needs further improvement obv.
     pub fn pick(&mut self) -> Option<(PieceIndex, usize)> {
-        trace!(?self.need, "PICK");
+        trace!(pick = ?self.need);
         for (index, piece) in self.need.iter_mut().enumerate() {
             match piece {
                 PieceState::Missing => {
@@ -124,10 +161,9 @@ impl PiecePicker {
 
 /// Information and methods shared with peer sessions in the torrent.
 ///
-/// This type contains fields that need to be read or updated by peer sessions.
-/// Fields expected to be mutated are thus secured for multi-threading access
+/// Fields expected to be mutated are thus secured for multi-threaded access
 /// with various synchronization primitives.
-pub struct Shared {
+pub(crate) struct Shared {
     /// The piece picker picks the next most optimal piece to download and is
     /// shared by all peers in a torrent
     pub piece_picker: Mutex<PiecePicker>,
@@ -199,20 +235,58 @@ impl Default for Conf {
     }
 }
 
+/// A peer session managed by `Torrent`.
+pub struct PeerSession {
+    /// The tansmit channel to communicate with [`Peer`].
+    tx: peer::Sender,
+    /// The session task handle. Errors reported at this level should **only**
+    /// appear during shutdown, meaning the session did not terminate in a
+    /// clean state, all other errors are handled at the session level.
+    handle: task::JoinHandle<Result<()>>,
+}
+
+impl PeerSession {
+    pub fn new(addr: SocketAddrV4, shared: Arc<Shared>, cmd_tx: Sender) -> Self {
+        let (tx, rx) = mpsc::unbounded_channel();
+
+        let handle = task::spawn(
+            async move {
+                let (mut session, peer_tx) =
+                    match peer::Session::outbound(addr, shared, cmd_tx, rx).await {
+                        Ok(peer) => peer,
+                        Err(why) => {
+                            warn!("failed connecting to peer {addr}: {why}");
+                            return Ok(());
+                        }
+                    };
+
+                if let Err(e) = session.run().await {
+                    error!("session run error: {e}");
+                }
+
+                Ok(())
+            }
+            .instrument(tracing::trace_span!("session")),
+        );
+
+        PeerSession { tx, handle }
+    }
+}
+
 /// The orchestrator of a torrent download or upload.
 pub struct Torrent {
     /// The configuration of this torrent.
     conf: Conf,
     /// Information that is shared with peer sessions.
     shared: Arc<Shared>,
-    /// The peers currently in this torrent with their task handle.
-    peers: HashMap<SocketAddrV4, task::JoinHandle<Result<()>>>,
+    /// The peers currently in this torrent and their respective task handle.
+    peers: HashMap<SocketAddrV4, PeerSession>,
     /// The peers returned by the tracker which we can connect.
     available_peers: Vec<SocketAddrV4>,
-    /// The holder of the last channels transmit.
+    /// The holder of this torrents last transmit channel.
     cmd_tx: Sender,
-    /// The channels receive on which other entities in the system send this torrent
-    /// messages.
+    /// The receive channel on which other parts of the system can
+    /// communicate with this torrent.
     cmd_rx: Receiver,
     /// The trackers we can announce to. For now just their urls.
     #[allow(dead_code)]
@@ -233,7 +307,7 @@ impl Torrent {
         let piece_picker = PiecePicker::new(storage);
         let trackers = vec![meta.announce.as_str().into()];
 
-        Self {
+        Torrent {
             conf,
             shared: Arc::new(Shared {
                 piece_picker: Mutex::new(piece_picker),
@@ -255,6 +329,7 @@ impl Torrent {
         info!("torrent started");
         self.start_time = Some(Instant::now());
         // TODO Spawn tracker peer discovery as a `task` so we dont block torrent.
+        // It should also be periodically announcing.
         match tracker::discover(&self.meta).await {
             Ok(resp) => {
                 info!("announced {resp:?}");
@@ -282,14 +357,19 @@ impl Torrent {
                     self.shutdown().await;
                     break;
                 },
-            };
+            }
         }
         Ok(())
     }
 
     async fn shutdown(&mut self) {
-        for (addr, handle) in self.peers.drain() {
-            match handle.await {
+        for (addr, session) in self.peers.drain() {
+            // should handle error and return in ShutdownError saying that we could
+            // not notify a peer about shutdown which could en up unclean state.
+            info!(%addr, "shutting down seesion");
+            let _ = session.tx.send(peer::Command::Shutdown);
+
+            /* match handle.await {
                 Ok(result) => match result {
                     Ok(_) => {
                         info!("connection with peer {addr} closed succesfully");
@@ -301,20 +381,19 @@ impl Torrent {
                 Err(e) => {
                     error!("sutdown handle error: {e}");
                 }
-            }
+            } */
         }
 
         info!(
-            "Shutdown complete; run duration: {}",
+            "Shutdown complete; run duration: {}s",
             self.run_duration.as_secs()
         );
     }
 
-    /// The torrent tick, as in "the tick of a clock", which runs every second
-    /// to perform periodic updates.
+    /// The torrent tick, as in "the tick of a clock", which runs every second.
     ///
-    /// This is **when** we update statistics and report them to the user, when new
-    /// peers are connected, and when periodic announces are made.
+    /// This is **when** the peer discovery and connection is done if necessary
+    /// and when stats are updated and reported to the consumers.
     async fn tick(&mut self, last_tick_time: &mut Option<Instant>, now: Instant) -> Result<()> {
         let elapsed_since_last_tick = last_tick_time
             .or(self.start_time)
@@ -336,129 +415,11 @@ impl Torrent {
         for addr in self.available_peers.drain(..) {
             let shared = Arc::clone(&self.shared);
             let cmd_tx = self.cmd_tx.clone();
-
-            let handle = task::spawn(async move {
-                let mut peer = match Peer::connect(addr, shared, cmd_tx).await {
-                    Ok(peer) => peer,
-                    Err(why) => {
-                        warn!("failed connecting to peer {addr}: {why}");
-                        return Ok(());
-                    }
-                };
-
-                let span = tracing::trace_span!("DOWNLOAD", ?addr);
-                let _enter = span.enter();
-
-                let Some(Frame::Bitfield(_)) = peer.recv().await.unwrap() else {
-                    bail!("expected bitfield frame")
-                };
-
-                peer.send(&Frame::Interested).await?;
-                peer.interested = true;
-
-                if let Some(Frame::Unchoke) = peer.recv().await.unwrap() {
-                    peer.is_choking = false;
-                } else {
-                    bail!("expected unchoke frame")
-                };
-
-                if peer.is_choking {
-                    debug!("cannot make requests while chocked");
-                    return Ok(());
-                }
-
-                if !peer.interested {
-                    debug!("cannot make requests while not interested");
-                    return Ok(());
-                }
-
-                loop {
-                    let Some((index, size)) = peer.shared.piece_picker.lock().unwrap().pick()
-                    else {
-                        info!(?peer.addr, "no more pieces to download, closing connection");
-                        break;
-                    };
-
-                    trace!(?index, ?size, "got next piece");
-
-                    let mut download = PieceDownload {
-                        index,
-                        data: BytesMut::with_capacity(size),
-                    };
-
-                    let chunk_count = chunk_count(size);
-                    for i in 0..chunk_count {
-                        // Check if last chunk.
-                        let chunk_size = if i == chunk_count - 1 {
-                            let rest = size % CHUNK_MAX;
-                            if rest == 0 {
-                                CHUNK_MAX
-                            } else {
-                                rest
-                            }
-                        } else {
-                            CHUNK_MAX
-                        };
-
-                        let chunk = peer.request(index, i * CHUNK_MAX, chunk_size).await?;
-                        trace!(?chunk.piece_index, chunk_index=i, ?chunk.offset, ?chunk_count, "received piece chunk");
-
-                        // TODO handle this errors nicely by holding the state
-                        // of each block of the piece, so that it can be resumed.
-                        ensure!(chunk.piece_index as usize == index);
-                        ensure!(chunk.offset as usize == i * CHUNK_MAX);
-                        ensure!(chunk.data.len() == chunk_size);
-
-                        download.data.extend(&chunk.data);
-                    }
-
-                    ensure!(download.data.len() == size);
-                    info!(?download.index, "completed");
-
-                    let _ = peer.cmd_tx.send(Command::PieceCompletion(download));
-
-                    // Batch some requests to avoid `send request / read response` cycles.
-                    /* let mut outgoing_requests = 0;
-                    let max_request_queue_len = 5;
-
-                    let pending_chunks: Vec<Chunk> = Vec::new();
-
-                    if outgoing_requests >= max_request_queue_len {
-
-                    } */
-
-                    // NOTE a big assumption is made that all peers have all pieces
-                    // this is most certainly not the case and we first have to check
-                    // wich pieces we have and which ones the peer has with the bitfield message.
-
-                    // We should also immplement tracking of blocks within each piece
-                    // to allow for concurrent downloads of a single piece from multiple
-                    // peers.
-
-                    // trace!(?target_request_queue_len, "sending request batch");
-                    // for _ in 0..target_request_queue_len {}
-                }
-
-                Ok(())
-            });
-
-            self.peers.insert(addr, handle);
+            let session = PeerSession::new(addr, shared, cmd_tx);
+            self.peers.insert(addr, session);
         }
 
-        debug!(
-            "STATS: \
-            elapsed {}s",
-            /* download: {} b/s (peak: {} b/s, total: {} b) wasted: {} b \
-            upload: {} b/s (peak: {} b/s, total: {} b)", */
-            self.run_duration.as_secs(),
-            /* self.counters.payload.down.avg(),
-            self.counters.payload.down.peak(),
-            self.counters.payload.down.total(),
-            self.counters.waste.total(),
-            self.counters.payload.up.avg(),
-            self.counters.payload.up.peak(),
-            self.counters.payload.up.total(), */
-        );
+        debug!("STATS: elapsed {}s", self.run_duration.as_secs());
 
         Ok(())
     }
@@ -473,9 +434,9 @@ impl Torrent {
                     let _ = resp_tx.send("ok".into());
                 }
             }
-            // These logic should be in another task, maybe use tokios `spawn_blocing`
+            // These logic should be in another task, maybe use tokios `spawn_blocking`
             // since writing to disk and verifying hashes is expensive and cannot
-            // be done asynchronously. Hence these is a big point of contention in `Torrent`.
+            // be done asynchronously. Hence this is a big point of contention in `Torrent`.
             // The `Disk` task should handle batch writes every N chunks received.
             Command::PieceCompletion(download) => {
                 trace!("piece completion");
@@ -490,8 +451,8 @@ impl Torrent {
                         let mut guard = self.shared.piece_picker.lock().unwrap();
                         let piece = &mut guard.need[download.index];
                         *piece = PieceState::Missing;
-                        trace!("invalid piece");
                     };
+                    trace!("invalid piece");
                     return Ok(());
                 }
 

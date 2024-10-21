@@ -16,7 +16,7 @@ mod crafters;
 mod download;
 use download::{Chunk, PieceDownload};
 
-mod torrent;
+pub mod torrent;
 use torrent::Torrent;
 
 /// The application protocol.

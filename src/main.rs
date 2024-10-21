@@ -1,5 +1,5 @@
 use clap::Parser;
-use tracing::level_filters::LevelFilter;
+use tracing::{error, level_filters::LevelFilter};
 use tracing_subscriber::EnvFilter;
 
 use bittorrent_starter_rust::{Cli, Result};
@@ -18,5 +18,9 @@ async fn main() -> Result<()> {
         .init();
 
     let cli = Cli::parse();
-    cli.command.execute().await
+
+    if let Err(e) = cli.command.execute().await {
+        error!("App error: {e}");
+    }
+    Ok(())
 }

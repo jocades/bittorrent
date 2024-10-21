@@ -1,4 +1,4 @@
-use bytes::{Bytes, BytesMut};
+use tokio_util::bytes::{Bytes, BytesMut};
 
 use crate::PieceIndex;
 

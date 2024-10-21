@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 use anyhow::{bail, Result};
-use bytes::{Bytes, BytesMut};
+use tokio_util::bytes::{Bytes, BytesMut};
 
 #[derive(Debug, PartialEq)]
 enum Frame {
