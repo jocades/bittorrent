@@ -7,7 +7,7 @@ use anyhow::{bail, ensure, Context};
 use clap::Args;
 use sha1::{Digest, Sha1};
 
-use crate::{crafters, torrent, tracker, Frame, Metainfo};
+use crate::{crafters, piece_picker::PiecePicker, torrent, tracker, Frame, Metainfo, Storage};
 
 #[derive(Args)]
 pub struct DownloadPiece {
@@ -23,8 +23,8 @@ impl DownloadPiece {
         let pieces = meta.pieces();
 
         // TODO: All of this is to comply with the callenge, it is ugly.
-        let storage = torrent::Storage::new(&meta, "test_download");
-        let piece_picker = torrent::PiecePicker::new(meta.piece_len());
+        let storage = Storage::new(&meta, "test_download");
+        let piece_picker = PiecePicker::new(meta.piece_len());
 
         let shared = Arc::new(torrent::Shared {
             piece_picker: Mutex::new(piece_picker),

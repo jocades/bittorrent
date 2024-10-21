@@ -89,7 +89,7 @@ impl Peer {
         self.send(&Frame::Request(request)).await?;
 
         match self.recv().await? {
-            Some(Frame::Piece(chunk)) => Ok(chunk),
+            Some(Frame::Chunk(chunk)) => Ok(chunk),
             other => bail!("expected piece frame got {other:?}"),
         }
     }

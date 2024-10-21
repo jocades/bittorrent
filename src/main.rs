@@ -6,6 +6,17 @@ use bittorrent_starter_rust::{Cli, Result};
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    setup_logging()?;
+
+    let mut cli = Cli::parse();
+
+    if let Err(e) = cli.command.execute().await {
+        error!("App error: {e}");
+    }
+    Ok(())
+}
+
+fn setup_logging() -> Result<()> {
     let filter = EnvFilter::builder()
         .with_default_directive(LevelFilter::DEBUG.into())
         .from_env()?
@@ -17,10 +28,5 @@ async fn main() -> Result<()> {
         .compact()
         .init();
 
-    let mut cli = Cli::parse();
-
-    if let Err(e) = cli.command.execute().await {
-        error!("App error: {e}");
-    }
     Ok(())
 }

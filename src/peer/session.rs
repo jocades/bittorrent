@@ -4,21 +4,73 @@ use anyhow::{bail, ensure, Result};
 use tokio::{
     net::TcpStream,
     sync::mpsc,
+    task,
     time::{self, Duration},
 };
 use tokio_util::bytes::BytesMut;
-use tracing::{debug, error, info, trace};
+use tracing::{debug, error, info, trace, Instrument};
 
 use super::{Connection, Frame, Request};
 use crate::{
     download::{chunk_count, PieceDownload, CHUNK_MAX},
     peer::connection,
+    PeerId,
 };
 use crate::{torrent, Chunk, PieceIndex};
 
 pub type Sender = mpsc::UnboundedSender<Command>;
 
 type Receiver = mpsc::UnboundedReceiver<Command>;
+
+/// A peer session managed by `Torrent` which owns the tasks `JoinHandle`.
+pub(crate) struct Join {
+    /// The tansmit channel to communicate with [`Peer`].
+    pub tx: Sender,
+    /// The peer id received after the handshake.
+    pub id: Option<PeerId>,
+    /// Information about a peers session.
+    pub state: State,
+    /// The session task handle. Errors reported at this level should **only**
+    /// appear during shutdown, meaning the session did not terminate in a
+    /// clean state, all other errors are handled at the session level.
+    pub handle: task::JoinHandle<Result<()>>,
+}
+
+pub fn spawn(
+    addr: SocketAddrV4,
+    shared: Arc<torrent::Shared>,
+    torrent_tx: torrent::Sender,
+) -> Join {
+    let (tx, rx) = mpsc::unbounded_channel();
+    let sender = tx.clone();
+
+    let mut session = Session {
+        addr,
+        tx,
+        rx,
+        torrent: shared,
+        torrent_tx,
+        state: State::default(),
+    };
+
+    let handle = task::spawn(
+        async move {
+            if let Err(e) = session.run().await {
+                error!("session error: {e}");
+            }
+
+            Ok(())
+        }
+        .instrument(tracing::trace_span!("session", %addr)),
+    );
+
+    Join {
+        tx: sender,
+        id: None,
+        state: State::default(),
+        handle,
+    }
+}
 
 /// The commands peer session can receive.
 #[allow(dead_code)]
@@ -68,7 +120,7 @@ impl Default for State {
 /// The most essential information of a peer session that is sent to torrent
 /// with each session tick.
 #[derive(Debug)]
-pub(crate) struct SessionStats {
+pub(crate) struct Stats {
     /// A snapshot of the session state.
     pub state: State,
     /* /// Various transfer statistics.
@@ -213,7 +265,7 @@ impl Session {
                 conn.write(&Frame::Request(req)).await?;
 
                 let chunk = match conn.read().await? {
-                    Some(Frame::Piece(chunk)) => chunk,
+                    Some(Frame::Chunk(chunk)) => chunk,
                     other => bail!("expected piece frame got {other:?}"),
                 };
 
@@ -262,8 +314,8 @@ impl Session {
 
     /// Returns a summary of the most important information of the session
     /// state to send to torrent.
-    fn session_stats(&self) -> SessionStats {
-        SessionStats {
+    fn session_stats(&self) -> Stats {
+        Stats {
             state: self.state,
             // counters: self.ctx.counters,
             // piece_count: self.peer.piece_count,

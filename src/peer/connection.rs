@@ -34,8 +34,9 @@ pub enum Frame {
 
     /// Correlated with request messages implicitly. It is possible for an unexpected
     /// piece to arrive if choke and unchoke messages are sent in quick succession
-    /// and/or transfer is going very slowly.
-    Piece(Chunk),
+    /// and/or transfer is going very slowly. Note: in the documentation this
+    /// message is referred as `piece`.
+    Chunk(Chunk),
 
     Cancel(Request),
 }
@@ -227,7 +228,7 @@ impl Connection {
                 begin: self.buf.get_u32(),
                 length: self.buf.get_u32(),
             }),
-            7 => Frame::Piece(Chunk {
+            7 => Frame::Chunk(Chunk {
                 piece_index: self.buf.get_u32() as usize,
                 offset: self.buf.get_u32(),
                 data: self.buf.split_to(len - 9).freeze(),
@@ -270,7 +271,7 @@ impl Connection {
                 self.stream.write_u32(req.begin).await?;
                 self.stream.write_u32(req.length).await?;
             }
-            Frame::Piece(chunk) => {
+            Frame::Chunk(chunk) => {
                 self.stream.write_u32((9 + chunk.data.len()) as u32).await?;
                 self.stream.write_u8(u8::from(frame)).await?;
                 self.stream.write_u32(chunk.piece_index as u32).await?;
@@ -309,7 +310,7 @@ impl From<&Frame> for u8 {
             Have(_) => 4,
             Bitfield(_) => 5,
             Request { .. } => 6,
-            Piece { .. } => 7,
+            Chunk { .. } => 7,
             Cancel { .. } => 8,
         }
     }

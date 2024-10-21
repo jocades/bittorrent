@@ -5,4 +5,4 @@ mod handshake;
 pub(crate) use handshake::HandshakePacket;
 
 pub(crate) mod session;
-pub(crate) use session::{Command, Sender, Session, State};
+pub(crate) use session::Command;
