@@ -30,7 +30,7 @@ pub enum Command {
 }
 
 impl Command {
-    pub async fn execute(&self) -> crate::Result<()> {
+    pub async fn execute(&mut self) -> crate::Result<()> {
         use Command::*;
         match self {
             Decode(cmd) => cmd.execute(),

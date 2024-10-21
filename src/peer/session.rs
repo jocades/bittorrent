@@ -100,6 +100,8 @@ impl Session {
             error!("outbound connection error: {e}");
         }
 
+        self.notify();
+
         Ok(())
     }
 

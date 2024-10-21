@@ -7,7 +7,7 @@ use bittorrent_starter_rust::{Cli, Result};
 #[tokio::main]
 async fn main() -> Result<()> {
     let filter = EnvFilter::builder()
-        .with_default_directive(LevelFilter::INFO.into())
+        .with_default_directive(LevelFilter::DEBUG.into())
         .from_env()?
         .add_directive("bittorrent=trace".parse()?)
         .add_directive("hyper::proto=info".parse()?); // Remove noise from external crate logs
@@ -17,7 +17,7 @@ async fn main() -> Result<()> {
         .compact()
         .init();
 
-    let cli = Cli::parse();
+    let mut cli = Cli::parse();
 
     if let Err(e) = cli.command.execute().await {
         error!("App error: {e}");

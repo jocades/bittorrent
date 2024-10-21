@@ -1,15 +1,15 @@
 use std::{
     collections::HashMap,
+    fs::File,
     future::Future,
-    io::SeekFrom,
+    io::{prelude::*, BufWriter, SeekFrom, Write},
     net::SocketAddrV4,
+    os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
 
 use tokio::{
-    fs::File,
-    io::{AsyncSeekExt, AsyncWriteExt},
     select,
     sync::{
         mpsc::{self, UnboundedReceiver, UnboundedSender},
@@ -19,9 +19,12 @@ use tokio::{
     time::{self, Duration, Instant},
 };
 
-use anyhow::Result;
+use anyhow::{ensure, Result};
 use sha1::{Digest, Sha1};
-use tokio_util::sync::CancellationToken;
+use tokio_util::{
+    bytes::{Bytes, BytesMut},
+    sync::CancellationToken,
+};
 use tracing::{debug, error, info, instrument, trace, warn, Instrument};
 
 use crate::{
@@ -282,7 +285,7 @@ impl PeerSession {
 
                 Ok(())
             }
-            .instrument(tracing::trace_span!("session")),
+            .instrument(tracing::trace_span!("session", %addr)),
         );
 
         PeerSession {
@@ -320,6 +323,8 @@ pub struct Torrent {
     meta: Metainfo,
     /// The signal to shutdown, given by the caller.
     token: CancellationToken,
+
+    file: File,
 }
 
 impl Torrent {
@@ -330,6 +335,7 @@ impl Torrent {
         let piece_picker = PiecePicker::new(storage.piece_count);
         let trackers = vec![meta.announce.as_str().into()];
 
+        let download = File::create(&storage.dest).unwrap();
         Torrent {
             conf,
             shared: Arc::new(Shared {
@@ -346,12 +352,12 @@ impl Torrent {
             run_duration: Duration::default(),
             meta,
             token: shutdown,
+            file: download,
         }
     }
 
     /// Called by `run` to setup some inner machinery.
     async fn start(&mut self) {
-        info!("torrent started");
         self.start_time = Some(Instant::now());
 
         // TODO Spawn tracker peer discovery as a `task` so we dont block torrent.
@@ -483,8 +489,8 @@ impl Torrent {
             // be done asynchronously. Hence this is a big point of contention in `Torrent`.
             // The `Disk` task should handle batch writes every N chunks received.
             Command::PieceCompletion(download) => {
-                trace!("PieceCompletion");
-                let mut file = File::create(&self.shared.storage.dest).await?;
+                debug!("piece completion");
+                // let mut file = File::create(&self.shared.storage.dest).await?;
 
                 let piece_hash = self.meta.pieces()[download.index];
                 trace!("veryfying hash");
@@ -502,11 +508,11 @@ impl Torrent {
                     return Ok(());
                 }
 
-                file.seek(SeekFrom::Start(
+                self.file.seek(SeekFrom::Start(
                     (download.index * self.meta.piece_len()) as u64,
-                ))
-                .await?;
-                file.write_all(&download.data).await?;
+                ))?;
+
+                self.file.write_all(&download.data)?;
                 info!(written = ?download.index);
 
                 // Mainly for the callenge since it expects the process to exit.
@@ -517,6 +523,8 @@ impl Torrent {
                 }
                 info!(?done);
                 if done {
+                    let size = self.file.metadata().unwrap().size();
+                    ensure!(self.shared.storage.total_size == size as usize);
                     self.token.cancel()
                 }
             }
