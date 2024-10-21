@@ -98,10 +98,11 @@ pub struct Connection {
     buf: BytesMut,
 }
 
-/// 4B
+/// The size of an integer complying with the BitTorrent protocol, defined as
+/// 4 bytes big endian. (The size of the length marker).
 const U32_SIZE: usize = std::mem::size_of::<u32>();
 
-/// 65536B (64KiB)
+/// The maximum size allowed for a frame. 65536B (64KiB)
 const FRAME_MAX: usize = 1 << 16;
 
 impl Connection {
@@ -246,12 +247,12 @@ impl Connection {
 
     /// Write a single `Frame` value to the underlying stream.
     ///
-    /// The `Frame` value is written to the socket using the various `write_*`
+    /// The `Frame` value is written to the stream using the various `write_*`
     /// functions provided by `AsyncWrite`. Calling these functions directly on
     /// a `TcpStream` is **not** advised, as this will result in a large number of
     /// syscalls. However, it is fine to call these functions on a *buffered*
     /// write stream. The data will be written to the buffer. Once the buffer is
-    /// full, it is flushed to the underlying socket.
+    /// full, it is flushed to the underlying stream.
     pub async fn write(&mut self, frame: &Frame) -> crate::Result<()> {
         match frame {
             Frame::Have(index) => {

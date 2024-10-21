@@ -23,8 +23,8 @@ pub type Sender = mpsc::UnboundedSender<Command>;
 type Receiver = mpsc::UnboundedReceiver<Command>;
 
 /// A peer session managed by `Torrent` which owns the tasks `JoinHandle`.
-pub(crate) struct Join {
-    /// The tansmit channel to communicate with [`Peer`].
+pub struct Join {
+    /// The tansmit channel to communicate with the peers [`Session`].
     pub tx: Sender,
     /// The peer id received after the handshake.
     pub id: Option<PeerId>,
@@ -56,9 +56,8 @@ pub fn spawn(
     let handle = task::spawn(
         async move {
             if let Err(e) = session.run().await {
-                error!("session error: {e}");
+                error!(cause = %e, "session error");
             }
-
             Ok(())
         }
         .instrument(tracing::trace_span!("session", %addr)),
@@ -149,14 +148,12 @@ impl Session {
         if let Err(e) = self.outbound().await {
             self.state.conn = connection::State::Disconnected;
             self.notify();
-            error!("outbound connection error: {e}");
+            error!(cause = %e, "outbound connection error");
         }
-
-        self.notify();
-
         Ok(())
     }
 
+    /// Attempt to connect to a peer.
     async fn connect(&mut self) -> Result<Connection> {
         let mut backoff = 1;
 
@@ -190,7 +187,7 @@ impl Session {
         trace!("send handshake");
         self.state.conn = connection::State::Handshaking;
         let handshake = conn.handshake(self.torrent.info_hash).await?;
-        info!(peer_id = hex::encode(handshake.peer_id()), "recv handshake");
+        trace!("recv handshake");
         self.state.conn = connection::State::Connected;
 
         let _ = self.torrent_tx.send(torrent::Command::PeerConnected {
@@ -205,7 +202,17 @@ impl Session {
         Ok(())
     }
 
-    pub async fn download(&mut self, conn: &mut Connection) -> Result<()> {
+    async fn execute(&mut self, cmd: Command) -> Result<()> {
+        match cmd {
+            Command::Shutdown => {
+                trace!("shutting down");
+            }
+            _ => unimplemented!(),
+        };
+        Ok(())
+    }
+
+    async fn download(&mut self, conn: &mut Connection) -> Result<()> {
         let Some(Frame::Bitfield(_)) = conn.read().await? else {
             bail!("expected bitfield frame")
         };

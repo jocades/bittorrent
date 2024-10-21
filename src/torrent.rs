@@ -24,6 +24,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, trace, warn};
 
 use crate::{
+    disk::Disk,
     peer::{self, connection, session},
     tracker, Metainfo, PeerId, PieceDownload, PiecePicker, Sha1Hash, Storage,
 };
@@ -36,6 +37,14 @@ pub async fn run(path: impl AsRef<Path>, shutdown: impl Future) {
 
     let token = CancellationToken::new();
     let mut torrent = Torrent::new(meta, Conf::default(), token.clone());
+    let tx = torrent.tx.clone();
+
+    let mut disk = Disk {
+        files: Vec::new(),
+        dest: Path::new("test_download_dir").into(),
+    };
+
+    disk.allocate(torrent.shared.storage.piece_count);
 
     select! {
         res = torrent.run() => {
@@ -52,6 +61,7 @@ pub async fn run(path: impl AsRef<Path>, shutdown: impl Future) {
             // The shutdown signal passed by the caller has been received.
             // Notify torrent and all current tasks.
             info!("shutting down");
+            let _ = tx.send(Command::Shutdown);
             token.cancel()
         }
     }
@@ -60,11 +70,10 @@ pub async fn run(path: impl AsRef<Path>, shutdown: impl Future) {
 /// The channel for communicating with `Torrent`.
 pub(crate) type Sender = UnboundedSender<Command>;
 
-/// The type of channel on which `Torrent` can listen for block write
-/// completions.
+/// The channel on which the system communicates with `Torrent`.
 pub(crate) type Receiver = UnboundedReceiver<Command>;
 
-/// Messages that the torrent can receive from other parts of the engine.
+/// Messages that the torrent can receive from other parts of the system.
 pub(crate) enum Command {
     /// Purely for testing.
     #[allow(dead_code)]
@@ -247,8 +256,8 @@ impl Torrent {
             let shared = Arc::clone(&self.shared);
             let torrent_tx = self.tx.clone();
 
-            let session = session::spawn(addr, shared, torrent_tx);
-            self.peers.insert(addr, session);
+            let session_join = session::spawn(addr, shared, torrent_tx);
+            self.peers.insert(addr, session_join);
         }
 
         info!(
@@ -297,11 +306,11 @@ impl Torrent {
             // be done asynchronously. Hence this is a big point of contention in `Torrent`.
             // The `Disk` task should handle batch writes every N chunks received.
             Command::PieceCompletion(download) => {
-                debug!("piece completion");
-                // let mut file = File::create(&self.shared.storage.dest).await?;
+                let span = tracing::debug_span!("piece completion", download.index);
+                let _enter = span.enter();
 
+                debug!("verifying hash");
                 let piece_hash = self.meta.pieces()[download.index];
-                trace!("veryfying hash");
                 if hex::encode(Sha1::digest(&download.data)) != hex::encode(piece_hash) {
                     // Put piece back in queue, and keep a record of peers who sent us
                     // corrupted pieces to block them in the future.
@@ -321,15 +330,18 @@ impl Torrent {
                 ))?;
 
                 self.file.write_all(&download.data)?;
-                debug!(written = ?download.index);
+                debug!("written");
+
+                let done = self
+                    .shared
+                    .piece_picker
+                    .lock()
+                    .unwrap()
+                    .mark_complete(download.index);
+
+                debug!(?done);
 
                 // Mainly for the callenge since it expects the process to exit.
-                let done: bool;
-                {
-                    let mut guard = self.shared.piece_picker.lock().unwrap();
-                    done = guard.mark_complete(download.index);
-                }
-                info!(?done);
                 if done {
                     let size = self.file.metadata().unwrap().size();
                     ensure!(self.meta.len() == size as usize);
@@ -344,6 +356,8 @@ impl Torrent {
 
     /// Attempts to perform a clean shutdown of all running tasks.
     async fn shutdown(&mut self) {
+        let now = Instant::now();
+
         if self.peers.is_empty() {
             info!("no sessions to shutdown");
         } else {
@@ -365,7 +379,7 @@ impl Torrent {
             }
         }
 
-        info!("shutdown complete");
-        info!(duration = self.run_duration.as_secs(), "STATS");
+        info!(took = ?now.elapsed(), "shutdown complete");
+        info!(run_duration = self.run_duration.as_secs(), "STATS");
     }
 }

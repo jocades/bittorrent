@@ -18,9 +18,9 @@ async fn main() -> Result<()> {
 
 fn setup_logging() -> Result<()> {
     let filter = EnvFilter::builder()
-        .with_default_directive(LevelFilter::DEBUG.into())
+        .with_default_directive(LevelFilter::INFO.into())
         .from_env()?
-        .add_directive("bittorrent=trace".parse()?)
+        // .add_directive("bittorrent=debug".parse()?)
         .add_directive("hyper::proto=info".parse()?); // Remove noise from external crate logs
 
     tracing_subscriber::fmt()

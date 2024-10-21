@@ -1,5 +1,5 @@
 use tokio_util::bytes::{BufMut, BytesMut};
-use tracing::debug;
+use tracing::{debug, trace};
 
 #[repr(C)]
 #[derive(Debug)]
@@ -25,6 +25,7 @@ impl PiecePacket {
         }
         let len = bytes.len() - Self::CHUNK_OFFSET;
         debug!(lead = Self::CHUNK_OFFSET, ?len);
+        trace!("level");
         unsafe { (std::ptr::slice_from_raw_parts(bytes.as_ptr(), len) as *const Self).as_ref() }
     }
 
