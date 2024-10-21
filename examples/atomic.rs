@@ -1,3 +1,4 @@
+#![allow(unused)]
 use std::sync::{
     atomic::{AtomicU32, Ordering},
     Arc,

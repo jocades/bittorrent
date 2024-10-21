@@ -65,13 +65,19 @@ impl HandshakePacket {
         Some(packet)
     }
 
-    #[allow(dead_code)]
-    pub fn info_hash(&self) -> &[u8; 20] {
-        &self.info_hash
+    /// Takes the peer_id consuming `self` so it be sent after a succesfull
+    /// handshake without copying.
+    pub fn take_peer_id(self) -> [u8; 20] {
+        self.peer_id
     }
 
     pub fn peer_id(&self) -> &[u8; 20] {
         &self.peer_id
+    }
+
+    #[allow(dead_code)]
+    pub fn info_hash(&self) -> &[u8; 20] {
+        &self.info_hash
     }
 
     #[allow(dead_code)]

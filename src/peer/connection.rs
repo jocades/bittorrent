@@ -2,10 +2,10 @@
 
 use std::ops::Deref;
 
-use anyhow::Context;
-use tokio_util::bytes::{Buf, Bytes, BytesMut};
+use anyhow::{Context, Result};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufWriter};
 use tokio::net::TcpStream;
+use tokio_util::bytes::{Buf, Bytes, BytesMut};
 
 use crate::peer::HandshakePacket;
 use crate::{Chunk, Sha1Hash, CLIENT_ID};
@@ -64,10 +64,36 @@ pub enum Error {
     UnknownKind(u8),
 }
 
+/// At any given time, a connection with a peer is in one of the below states.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum State {
+    /// The connection has not yet been established or it had been connected
+    /// before but has been stopped.
+    Disconnected,
+    /// The state during which the TCP connection is established.
+    Connecting,
+    /// The state after establishing the TCP connection and exchanging the
+    /// initial BitTorrent handshake.
+    Handshaking,
+    /// This is the normal state of a peer session, in which any messages, apart
+    /// from the 'handshake' and 'bitfield', may be exchanged.
+    Connected,
+}
+
+/// The default and initial state of a peer session is `Disconnected`.
+impl Default for State {
+    fn default() -> Self {
+        State::Disconnected
+    }
+}
+
 /// A wrapper around the `TcpStream` to read and write framed messages.
 #[derive(Debug)]
 pub struct Connection {
+    /// The `TcpStream` decorated with a `BufWriter` which provides buffered
+    /// level buffering.
     stream: BufWriter<TcpStream>,
+    /// The buffer for reading frames.
     buf: BytesMut,
 }
 
@@ -78,7 +104,9 @@ const U32_SIZE: usize = std::mem::size_of::<u32>();
 const FRAME_MAX: usize = 1 << 16;
 
 impl Connection {
-    pub fn new(stream: TcpStream) -> Connection {
+    /// Create a new `Connection`, backed by `stream`. Read and write buffers
+    /// are initialized.
+    pub fn new(stream: TcpStream) -> Self {
         Connection {
             stream: BufWriter::new(stream),
             buf: BytesMut::with_capacity(32 * 1024),
@@ -90,7 +118,7 @@ impl Connection {
     ///
     /// Hence the use of a separate [`HandshakePacket`] type which is reused to
     /// allocate the handshake response.
-    pub async fn handshake(&mut self, info_hash: Sha1Hash) -> crate::Result<HandshakePacket> {
+    pub async fn handshake(&mut self, info_hash: Sha1Hash) -> Result<HandshakePacket> {
         let mut packet = HandshakePacket::new(info_hash, *CLIENT_ID);
         self.stream
             .write_all(packet.as_bytes())
@@ -115,7 +143,7 @@ impl Connection {
     /// On success, the received frame is returned. If the `TcpStream` is
     /// closed in a way that doesn't break a frame in half, it returns `None`.
     /// Otherwise, an error is returned.
-    pub async fn read_frame(&mut self) -> crate::Result<Option<Frame>> {
+    pub async fn read(&mut self) -> crate::Result<Option<Frame>> {
         loop {
             // Attempt to parse a frame from the buffered data. If enough data
             // has been buffered, the frame is returned
@@ -223,7 +251,7 @@ impl Connection {
     /// syscalls. However, it is fine to call these functions on a *buffered*
     /// write stream. The data will be written to the buffer. Once the buffer is
     /// full, it is flushed to the underlying socket.
-    pub async fn write_frame(&mut self, frame: &Frame) -> crate::Result<()> {
+    pub async fn write(&mut self, frame: &Frame) -> crate::Result<()> {
         match frame {
             Frame::Have(index) => {
                 self.stream.write_u32(5).await?;

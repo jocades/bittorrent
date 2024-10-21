@@ -9,7 +9,7 @@ mod tracker;
 use tracker::Tracker;
 
 mod peer;
-use peer::{Frame, Peer};
+use peer::Frame;
 
 mod crafters;
 

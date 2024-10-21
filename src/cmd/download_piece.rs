@@ -7,7 +7,7 @@ use anyhow::{bail, ensure, Context};
 use clap::Args;
 use sha1::{Digest, Sha1};
 
-use crate::{crafters, torrent, tracker, Frame, Metainfo, Peer};
+use crate::{crafters, torrent, tracker, Frame, Metainfo};
 
 #[derive(Args)]
 pub struct DownloadPiece {
@@ -24,11 +24,12 @@ impl DownloadPiece {
 
         // TODO: All of this is to comply with the callenge, it is ugly.
         let storage = torrent::Storage::new(&meta, "test_download");
-        let piece_picker = torrent::PiecePicker::new(storage);
+        let piece_picker = torrent::PiecePicker::new(meta.piece_len());
 
         let shared = Arc::new(torrent::Shared {
             piece_picker: Mutex::new(piece_picker),
             info_hash: meta.info.hash().unwrap(),
+            storage,
         });
 
         let (cmd_tx, _) = tokio::sync::mpsc::unbounded_channel();
@@ -36,7 +37,7 @@ impl DownloadPiece {
         ensure!(self.piece < pieces.len());
 
         let resp = tracker::discover(&meta).await?;
-        let mut peer = Peer::connect(resp.peers[0], shared, cmd_tx).await?;
+        let mut peer = crafters::Peer::connect(resp.peers[0], shared, cmd_tx).await?;
 
         let Some(Frame::Bitfield(_)) = peer.recv().await? else {
             bail!("expected bitfield frame")

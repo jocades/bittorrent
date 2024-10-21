@@ -9,25 +9,91 @@
 //! <- piece
 //!
 
-//! This module is deemed to be dead by the end of the callenge.
+//! NOTE: This module is deemed to be dead by the end of the callenge.
 
-#![allow(unused_imports)]
-use std::io::SeekFrom;
-use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use anyhow::{bail, ensure, Result};
-use tokio_util::bytes::{Bytes, BytesMut};
-use sha1::{Digest, Sha1};
-use tokio::fs::File;
-use tokio::io::{AsyncSeekExt, AsyncWriteExt};
-use tokio::sync::mpsc;
-use tracing::debug;
+use tokio_util::bytes::BytesMut;
 
-use crate::{tracker, Frame, Metainfo, Peer};
+use crate::peer::Connection;
+use crate::peer::{session::State, Request};
+use tracing::{info, instrument, trace};
+
+use std::net::SocketAddrV4;
+
+use tokio::net::TcpStream;
+
+use crate::{torrent, Chunk};
+
+use crate::Frame;
 
 /// Max `piece chunk` size, 16 * 1024 bytes (16 kiB)
 const CHUNK_MAX: usize = 1 << 14;
+
+#[allow(dead_code)]
+pub struct Peer {
+    pub addr: SocketAddrV4,
+    /// The framed connection.
+    pub conn: Connection,
+    /// The [`Torrent`] shared state with the peers.
+    pub torrent: Arc<torrent::Shared>,
+    /// The [`Torrent`] transmit cannel.
+    pub cmd_tx: torrent::Sender,
+    /// The peers state.
+    pub state: State,
+}
+
+impl Peer {
+    /// Connect to a peer and try to perform a handshake to establish the connection.
+    #[instrument(level = "trace", skip(shared, cmd_tx))]
+    pub async fn connect(
+        addr: SocketAddrV4,
+        shared: Arc<torrent::Shared>,
+        cmd_tx: torrent::Sender,
+    ) -> Result<Self> {
+        // TODO: add timeouts.
+        trace!("connecting");
+        let stream = TcpStream::connect(addr).await?;
+        let mut conn = Connection::new(stream);
+        trace!("connected");
+
+        trace!("send handshake");
+        let handshake = conn.handshake(shared.info_hash).await?;
+        info!(peer_id = hex::encode(handshake.peer_id()), "recv handshake");
+
+        Ok(Peer {
+            addr,
+            conn,
+            cmd_tx,
+            torrent: shared,
+            state: State::default(),
+        })
+    }
+
+    pub async fn send(&mut self, frame: &Frame) -> Result<()> {
+        self.conn.write(frame).await
+    }
+
+    pub async fn recv(&mut self) -> Result<Option<Frame>> {
+        self.conn.read().await
+    }
+
+    pub async fn request(&mut self, index: usize, begin: usize, length: usize) -> Result<Chunk> {
+        let request = Request {
+            index: index as u32,
+            begin: begin as u32,
+            length: length as u32,
+        };
+        trace!(sending = ?request);
+        self.send(&Frame::Request(request)).await?;
+
+        match self.recv().await? {
+            Some(Frame::Piece(chunk)) => Ok(chunk),
+            other => bail!("expected piece frame got {other:?}"),
+        }
+    }
+}
 
 /* pub async fn full(torrent: &Metainfo, output: impl AsRef<Path>) -> Result<()> {
     download(torrent, output).await
